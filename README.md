@@ -6,24 +6,86 @@ hospitals, police, traffic control and a command center sharing one live state.
 ![mode](https://img.shields.io/badge/backend-Python%20stdlib%20only-blue)
 ![deps](https://img.shields.io/badge/storage-SQLite%20(stdlib)-brightgreen)
 
-## Quick start
+## Installation
 
+### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| [Python 3.8+](https://www.python.org/downloads/) | The **only** dependency — the server uses the standard library alone. Nothing to `pip install`. |
+| A modern browser | Chrome, Edge or Firefox recommended (PWA install + service worker need one of these). |
+
+Check your Python version:
+
+```bash
+python --version        # Windows (or: py -3 --version)
+python3 --version       # Linux / macOS
 ```
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/kukrejaagirish/lifeline.git
 cd lifeline
-start.bat            (or: python server.py)
 ```
 
-Open **http://127.0.0.1:8787** in your browser. Sign in as *Responder* or
-*Command Center* (or any stakeholder role). Open more tabs — even on other
-devices on your network via `http://<your-ip>:8787` — and watch every action
-sync in real time.
+*(No git? Click **Code → Download ZIP** on GitHub and unzip it instead.)*
 
-Deep-link a role: `http://127.0.0.1:8787/#responder/AMB-1024` or `/#command`.
+### 2. Start the server
 
-No Python? Open `public/index.html` directly — the app detects the missing
+**Windows**
+
+```bat
+start.bat
+:: or manually:
+python server.py
+```
+
+**Linux / macOS**
+
+```bash
+python3 server.py
+```
+
+On first run the server creates `data/lifeline.db`, seeds demo hospitals,
+units and cases, and prints a startup banner. That's the whole install —
+no virtualenv, no package manager, no build step.
+
+### 3. Open the app
+
+Browse to **http://127.0.0.1:8787** and pick a role:
+
+- **Responder** (`AMB-1024`) — ambulance crew view: claim runs, advance status
+- **Command Center** — full coordination dashboard: create cases, assign units,
+  declare MCI incidents, export CSV reports
+
+Open more tabs — even on other devices on your network via
+`http://<your-ip>:8787` — and watch every action sync in real time.
+Deep-link a role directly: `http://127.0.0.1:8787/#responder/AMB-1024`.
+
+### No Python? Try the offline demo
+
+Open `public/index.html` directly in a browser — the app detects the missing
 server and runs in **offline demo mode** (mock data, synced across tabs of that
-browser only). The app is also a **PWA**: installable, with the static shell
-cached for offline use (API always requires the network).
+browser only). The app is also a **PWA**: once served over HTTP you can install
+it, and the static shell keeps working without a connection (the API always
+requires the network).
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `python is not recognized` | Install Python and tick *Add to PATH*, or use `py -3 server.py` on Windows. |
+| Port already in use | `python server.py --port 8788` (then open `:8788`). |
+| Badge says OFFLINE DEMO | The page can't reach the server — make sure `server.py` is running and you're using the right host/port. |
+| Want a clean slate | Stop the server, delete `data/lifeline.db`, restart (or run with `--fresh`). |
+
+### Optional: real SMS / WhatsApp
+
+Out of the box, SMS/WhatsApp dispatch is **simulated** and labelled as such.
+To send real messages through Twilio, see
+[Enabling real SMS / WhatsApp](#enabling-real-sms--whatsapp-twilio) below —
+it's a three-line `.env` file.
 
 ## What's new in v3
 
