@@ -400,6 +400,16 @@ def rate_allow(ip):
         return b[1] <= RATE_LIMIT
 
 
+def rate_prune():
+    """Drop IP buckets from previous minutes so RL_BUCKETS does not grow
+    without bound over a long-running server (many distinct client IPs)."""
+    with RL_LOCK:
+        w = int(time.time() // 60)
+        stale = [ip for ip, b in RL_BUCKETS.items() if b[0] != w]
+        for ip in stale:
+            del RL_BUCKETS[ip]
+
+
 # --------------------------------------------------------------------------
 # Store — in-memory state with write-through SQLite
 # --------------------------------------------------------------------------
@@ -572,6 +582,8 @@ class Store:
                 hh["ts"] = datetime.fromisoformat(hh["ts"])
         c["tags"] = json.loads(c["tags"] or "[]")
         c["handover"] = json.loads(c["handover"] or "{}")
+        if isinstance(c["age"], str) and c["age"].isdigit():
+            c["age"] = int(c["age"])
         c["delayed"] = bool(c["delayed"])
         c["sla_escalated"] = bool(c["sla_escalated"])
         return c
@@ -1276,6 +1288,7 @@ def maintenance_loop():
     while True:
         time.sleep(5.0)
         try:
+            rate_prune()
             changed = False
             with STORE.lock:
                 STORE.purge_tokens()
@@ -1475,8 +1488,9 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
         except Exception as e:
+            print(f"[server] GET {self.path} failed: {e!r}", flush=True)
             try:
-                self._error(500, f"Internal error: {e}")
+                self._error(500, "Internal error.")
             except Exception:
                 self.close_connection = True
 
@@ -1619,8 +1633,9 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
         except Exception as e:
+            print(f"[server] POST {self.path} failed: {e!r}", flush=True)
             try:
-                self._error(500, f"Internal error: {e}")
+                self._error(500, "Internal error.")
             except Exception:
                 self.close_connection = True
 
@@ -1660,7 +1675,8 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_static(self, path):
         rel = "index.html" if path in ("", "/") else path.lstrip("/")
         safe = os.path.normpath(os.path.join(PUBLIC_DIR, rel))
-        if not safe.startswith(PUBLIC_DIR) or not os.path.isfile(safe):
+        if not (safe == PUBLIC_DIR or safe.startswith(PUBLIC_DIR + os.sep)) \
+                or not os.path.isfile(safe):
             return self._error(404, "Not found.")
         ext = os.path.splitext(safe)[1].lower()
         ctype = CONTENT_TYPES.get(ext, "application/octet-stream")
@@ -1742,7 +1758,17 @@ def main():
     print(f"[store] SQLite ready · region={STORE.region} · "
           f"{len(STORE.cases)} cases · rev {STORE.rev}", flush=True)
 
-    atexit.register(lambda: None)  # sqlite commits are synchronous already
+    def _close_db():
+        try:
+            with STORE.lock:
+                if STORE.dirty:
+                    STORE.set_meta("rev", STORE.rev)
+                    STORE.dirty = False
+                STORE.db.close()
+        except Exception:
+            pass
+
+    atexit.register(_close_db)
 
     threading.Thread(target=maintenance_loop, daemon=True).start()
     threading.Thread(target=sim_loop, args=(not args.no_sim,),
