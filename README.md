@@ -6,6 +6,30 @@ hospitals, police, traffic control and a command center sharing one live state.
 ![mode](https://img.shields.io/badge/backend-Python%20stdlib%20only-blue)
 ![deps](https://img.shields.io/badge/storage-SQLite%20(stdlib)-brightgreen)
 
+## The problem
+
+Ambulance-to-hospital handoffs in Indian metros routinely lose time to
+fragmented communication: a responder calls a hospital that turns out to have
+no ICU beds, a command center learns about a delayed transfer only when
+someone calls in, and a mass-casualty scene has no single shared picture of
+who's headed where. Life-Line puts every stakeholder — responder, sending
+hospital, destination hospital, police, traffic control, command — on one
+live-synced state, with AI doing the parts a human shouldn't have to do
+manually under pressure: triaging a new case from a spoken or typed
+description, and summarizing the whole board into a briefing a commander can
+read in five seconds.
+
+## What's actually AI here (and what isn't)
+
+| Feature | Real or simulated |
+|---|---|
+| AI Triage (priority/dept/equipment from clinical notes) | **Real Claude API call** when `LIFELINE_ANTHROPIC_KEY` is set; transparent offline keyword heuristic otherwise — never silently fakes a result |
+| AI Situation Report (command briefing) | Same pattern — real Claude call or honest heuristic fallback |
+| Voice input for triage notes | Real (browser Web Speech API), no server round-trip |
+| Destination recommendation / ETA prediction | Rule-based scoring (distance, specialty match, bed count) — not AI, always heuristic |
+| SMS/WhatsApp dispatch | Simulated unless Twilio credentials are configured — status shown honestly per message |
+| Hospital bed counts | Simulated demo data for Mumbai-area hospitals |
+
 ## Installation
 
 ### Prerequisites
@@ -98,6 +122,8 @@ it's a three-line `.env` file.
 | Notifications log | SMS/WhatsApp/radio dispatch per event; **simulated** unless Twilio env vars set — status shown honestly per message |
 | Smart recommendations | `GET /api/recommend` scores hospitals by specialty match, free ICU beds and distance |
 | ETA prediction | `GET /api/predict` returns historical average duration for a route/priority |
+| **AI Triage** | `POST /api/triage` — Claude-powered (or heuristic fallback) priority/dept/tag suggestion from free-text notes |
+| **AI Situation Report** | `GET /api/situation-report` — one-tap command briefing from live case & bed data |
 | MCI incidents | Declare/close mass-casualty incidents; link cases; live per-priority counts |
 | Handover POD | 5-item checklist per case with actor + timestamp; complete = proof of delivery |
 | Equipment tags | Ventilator, Isolation, Incubator, Blood Onboard, … validated server-side |
@@ -110,6 +136,11 @@ it's a three-line `.env` file.
 
 ### Frontend (`public/`)
 
+- **AI Triage box** in the New Transfer form: free-text (or spoken, via mic
+  button + Web Speech API) clinical notes → suggested priority, department,
+  equipment tags and age
+- **AI Situation Report** button on the Command Center: one tap generates a
+  short live briefing of active load, delays, bed pressure and open incidents
 - **Live operations map** (Leaflet): hospital markers colored by bed pressure,
   dashed priority-colored transfer routes, ambulances interpolated along routes
 - **Hindi + Marathi UI** (EN/HI/MR selector) alongside English
@@ -142,6 +173,8 @@ python server.py [--host 127.0.0.1] [--port 8787] [--fresh] [--no-sim]
 | Variable | Default | Purpose |
 |---|---|---|
 | `LIFELINE_TWILIO_SID` / `LIFELINE_TWILIO_AUTH` / `LIFELINE_TWILIO_FROM` | — | Enable real SMS/WhatsApp dispatch via Twilio. Without them, dispatch is logged as `simulated`. |
+| `LIFELINE_ANTHROPIC_KEY` | — | Enable real AI Triage & Situation Report via Claude. Without it, both features run an offline keyword/template heuristic and clearly report `"mode": "heuristic"` in their response. |
+| `LIFELINE_ANTHROPIC_MODEL` | `claude-sonnet-5` | Override the model used for AI Triage / Situation Report. |
 | `LIFELINE_SLA_REGISTER_MIN` | `10` | Minutes a case may sit REGISTERED before auto-escalation |
 | `LIFELINE_DELAY_GRACE_MIN` | `10` | Grace minutes past ETA before DELAYED flag |
 | `LIFELINE_RATE_LIMIT` | `120` | POST requests per minute per IP |
@@ -190,6 +223,7 @@ All mutations require `Authorization: Bearer <token>`.
 | GET | `/api/notifications` | state_read | Dispatch log with delivery status |
 | GET | `/api/recommend?dept=&origin=` | state_read | Top-5 destination suggestions |
 | GET | `/api/predict?origin=&dest=&priority=` | state_read | Historical ETA prediction |
+| GET | `/api/situation-report` | state_read | AI/heuristic command briefing from live case & bed data |
 | GET | `/api/report.csv` | command, admin | CSV export of all cases |
 | POST | `/api/cases` | sending, responder, command | Create case (+bed reserve, tags, incident link) |
 | POST | `/api/cases/{id}/status` | responder, command | Advance lifecycle status |
@@ -200,6 +234,7 @@ All mutations require `Authorization: Bearer <token>`.
 | POST | `/api/cases/{id}/cancel` | command | `{reason}` — cancel + release resources |
 | POST | `/api/cases/{id}/escalate` | command | Raise priority one level |
 | POST | `/api/cases/{id}/handover` | responder, command | `{item, done}` — tick POD checklist |
+| POST | `/api/triage` | sending, responder, command | `{notes}` — AI/heuristic priority, department, tags, age suggestion |
 | POST | `/api/incidents` | command | `{name, location}` — declare MCI |
 | POST | `/api/incidents/{id}/close` | command | Close an incident |
 

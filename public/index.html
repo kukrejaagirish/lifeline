@@ -131,6 +131,16 @@
       <button class="close-x" id="modalClose" aria-label="Close dialog">×</button>
     </div>
     <div class="modal-body">
+      <div class="field ai-triage-field">
+        <label for="fClinicalNotes">🤖 AI Triage <span class="ai-triage-hint">— describe symptoms, get a suggestion</span></label>
+        <textarea id="fClinicalNotes" rows="2" placeholder="e.g. 61yo male, sudden chest pain radiating to left arm, sweating, breathless"></textarea>
+        <div class="ai-triage-row">
+          <button type="button" class="btn ghost sm" id="aiTriageBtn">Suggest priority &amp; department</button>
+          <button type="button" class="btn ghost sm mic-btn" id="micBtn" title="Speak symptoms" hidden>🎙️</button>
+          <span class="ai-triage-status" id="aiTriageStatus"></span>
+        </div>
+        <div class="ai-triage-result" id="aiTriageResult" hidden></div>
+      </div>
       <div class="field">
         <label>Priority</label>
         <div class="prio-select" id="prioSelect">

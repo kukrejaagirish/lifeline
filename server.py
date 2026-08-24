@@ -24,6 +24,13 @@ Twilio (optional, enables real SMS/WhatsApp):
     set LIFELINE_TWILIO_SID=ACxxxx
     set LIFELINE_TWILIO_AUTH=xxxx
     set LIFELINE_TWILIO_FROM=+1xxxx   (or whatsapp:+1xxxx)
+
+AI Triage (optional, enables real Claude-powered triage suggestions):
+    set LIFELINE_ANTHROPIC_KEY=sk-ant-xxxx
+    set LIFELINE_ANTHROPIC_MODEL=claude-sonnet-5   (optional override)
+    Without a key, /api/triage runs an offline keyword heuristic instead —
+    the feature always works, and the response always reports which mode
+    (ai / heuristic / heuristic-fallback) produced the suggestion.
 """
 
 import argparse
@@ -123,6 +130,10 @@ TWILIO_AUTH = os.environ.get("LIFELINE_TWILIO_AUTH", "")
 TWILIO_FROM = os.environ.get("LIFELINE_TWILIO_FROM", "")
 NOTIFY_MODE = "twilio" if (TWILIO_SID and TWILIO_AUTH and TWILIO_FROM) \
     else "simulated"
+
+ANTHROPIC_KEY = os.environ.get("LIFELINE_ANTHROPIC_KEY", "")
+ANTHROPIC_MODEL = os.environ.get("LIFELINE_ANTHROPIC_MODEL", "claude-sonnet-5")
+TRIAGE_MODE = "ai" if ANTHROPIC_KEY else "heuristic"
 
 
 def now():
@@ -249,6 +260,208 @@ SPECIALTY_KEYWORDS = {
     "burns": ["masina", "j.j.", "kasturba"],
     "icu": [],  # every hospital scores base ICU capability from beds
 }
+
+# ---------------------------------------------------------------------------
+# AI Triage — free-text clinical notes -> suggested priority/dept/tags.
+# Uses the Anthropic API when LIFELINE_ANTHROPIC_KEY is set; otherwise (or on
+# any API failure) falls back to a transparent keyword heuristic so the
+# feature always works, including fully offline demo mode.
+# ---------------------------------------------------------------------------
+TRIAGE_CRITICAL_KW = [
+    "cardiac arrest", "not breathing", "unconscious", "unresponsive",
+    "stemi", "heart attack", "stroke", "severe bleeding", "gunshot",
+    "stab wound", "seizure", "anaphyla", "choking", "drowning",
+    "severe trauma", "multiple injuries", "no pulse", "collapsed",
+]
+TRIAGE_URGENT_KW = [
+    "chest pain", "breathless", "shortness of breath", "fracture",
+    "high fever", "dehydration", "labor", "labour", "pregnan", "burns",
+    "allergic reaction", "fall", "accident", "rta", "road traffic",
+    "head injury", "bleeding",
+]
+TRIAGE_DEPT_KW = {
+    "Cardiac ICU": ["chest pain", "heart", "cardiac", "stemi", "palpitation"],
+    "Neurosurgery": ["head trauma", "head injury", "stroke", "seizure",
+                      "neuro", "brain", "spinal"],
+    "Trauma": ["accident", "rta", "road traffic", "fracture", "gunshot",
+               "stab", "trauma", "fall"],
+    "Obstetric ICU": ["labor", "labour", "pregnan", "delivery", "obstetric"],
+    "Nephrology": ["dialysis", "kidney", "renal"],
+    "Pediatric": ["child", "infant", "newborn", "toddler"],
+    "Burns Unit": ["burn", "scald"],
+}
+TRIAGE_TAG_KW = {
+    "Ventilator": ["not breathing", "breathless", "respiratory", "ventilat",
+                   "shortness of breath"],
+    "Defibrillator": ["cardiac arrest", "heart attack", "stemi",
+                       "arrhythmia", "no pulse"],
+    "Blood Onboard": ["bleeding", "hemorrhage", "haemorrhage", "blood loss",
+                       "stab", "gunshot"],
+    "Incubator": ["infant", "newborn", "premature", "preterm"],
+    "Isolation": ["infectious", "contagious", "isolation"],
+    "Spinal Board": ["spinal", "head trauma", "fall from height", "rta"],
+    "Bariatric": ["obese", "bariatric"],
+}
+TRIAGE_AGE_RE = re.compile(r"(\d{1,3})\s*(?:yo\b|y/o\b|years?\b|yrs?\b)", re.I)
+
+
+def heuristic_triage(notes):
+    t = notes.lower()
+    priority = "priority"
+    if any(k in t for k in TRIAGE_CRITICAL_KW):
+        priority = "critical"
+    elif any(k in t for k in TRIAGE_URGENT_KW):
+        priority = "urgent"
+    dept = "Emergency"
+    for name, kws in TRIAGE_DEPT_KW.items():
+        if any(k in t for k in kws):
+            dept = name
+            break
+    tags = [tag for tag, kws in TRIAGE_TAG_KW.items() if any(k in t for k in kws)]
+    m = TRIAGE_AGE_RE.search(t)
+    age = int(m.group(1)) if m else None
+    return {"priority": priority, "dept": dept, "tags": tags[:3], "age": age,
+            "reasoning": "Offline keyword heuristic (no AI key configured).",
+            "mode": "heuristic"}
+
+
+def ai_triage(notes):
+    system = (
+        "You are an emergency medical triage assistant embedded in an "
+        "ambulance dispatch system. Given free-text clinical notes about a "
+        "patient, respond with ONLY a compact JSON object, no markdown "
+        "fences, no prose, exactly these keys: "
+        '{"priority": "critical"|"urgent"|"priority", '
+        '"dept": "<short hospital department name>", '
+        '"tags": [subset of "Ventilator","Isolation","Bariatric",'
+        '"Incubator","Defibrillator","Blood Onboard","Spinal Board"], '
+        '"age": <integer patient age if mentioned, else null>, '
+        '"reasoning": "<one short sentence>"}. '
+        "priority meanings — critical: immediate life threat; urgent: "
+        "serious but stable; priority: non-life-threatening. If in doubt, "
+        "triage upward (toward critical)."
+    )
+    body = json.dumps({
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 300,
+        "system": system,
+        "messages": [{"role": "user", "content": notes[:1000]}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages", data=body)
+    req.add_header("x-api-key", ANTHROPIC_KEY)
+    req.add_header("anthropic-version", "2023-06-01")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    text = "".join(b.get("text", "") for b in payload.get("content", [])
+                    if b.get("type") == "text").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text.split("\n", 1)[1] if "\n" in text else text
+    data = json.loads(text)
+    priority = data.get("priority") if data.get("priority") in PRIORITIES \
+        else "priority"
+    tags = [x for x in (data.get("tags") or []) if x in TAGS]
+    age = data.get("age")
+    try:
+        age = int(age) if age is not None else None
+    except (TypeError, ValueError):
+        age = None
+    return {"priority": priority, "dept": str(data.get("dept") or "Emergency")[:60],
+            "tags": tags[:3], "age": age,
+            "reasoning": str(data.get("reasoning") or "")[:200], "mode": "ai"}
+
+
+def run_triage(notes):
+    notes = (notes or "").strip()
+    if not notes:
+        return {"error": "Clinical notes are required for triage."}
+    if TRIAGE_MODE == "ai":
+        try:
+            return ai_triage(notes)
+        except Exception as e:
+            result = heuristic_triage(notes)
+            result["reasoning"] = (
+                f"AI triage unavailable ({str(e)[:60]}) — used offline "
+                "heuristic fallback.")
+            result["mode"] = "heuristic-fallback"
+            return result
+    return heuristic_triage(notes)
+
+
+# ---------------------------------------------------------------------------
+# AI Situation Report — structured operational snapshot -> a short human
+# briefing for the command dashboard. Same honest ai/heuristic/fallback
+# pattern as triage above.
+# ---------------------------------------------------------------------------
+def heuristic_sitrep(ctx):
+    total_active = (ctx["active_critical"] + ctx["active_urgent"]
+                    + ctx["active_priority"])
+    parts = [
+        f"{total_active} active transfer(s) in progress "
+        f"({ctx['active_critical']} critical, {ctx['active_urgent']} urgent, "
+        f"{ctx['active_priority']} priority)." if total_active
+        else "No active transfers — system nominal."
+    ]
+    if ctx["delayed_count"]:
+        parts.append(
+            f"{ctx['delayed_count']} transfer(s) flagged DELAYED beyond ETA "
+            f"({', '.join(ctx['delayed_ids'])}) — review routing.")
+    if ctx["low_bed_hospitals"]:
+        names = ", ".join(
+            f"{h['name']} ({h['icu']} ICU)" for h in ctx["low_bed_hospitals"][:3])
+        parts.append(f"ICU capacity tight at: {names}.")
+    if ctx["open_incidents"]:
+        names = ", ".join(i["id"] for i in ctx["open_incidents"])
+        parts.append(f"{len(ctx['open_incidents'])} mass-casualty incident(s) "
+                      f"open ({names}).")
+    return {"summary": " ".join(parts),
+            "reasoning": "Offline templated summary (no AI key configured).",
+            "mode": "heuristic"}
+
+
+def ai_sitrep(ctx):
+    system = (
+        "You are a briefing assistant for an emergency ambulance dispatch "
+        "command center. You will be given a small JSON snapshot of current "
+        "operational stats. Write a concise 2-4 sentence situation report "
+        "for a human commander: current load, the most important risk "
+        "(bed pressure, delayed transfers, open incidents), and one clear "
+        "recommendation if warranted. Plain prose only, no markdown, no "
+        "bullet points, no headers."
+    )
+    body = json.dumps({
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 250,
+        "system": system,
+        "messages": [{"role": "user", "content": json.dumps(ctx)}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages", data=body)
+    req.add_header("x-api-key", ANTHROPIC_KEY)
+    req.add_header("anthropic-version", "2023-06-01")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    text = "".join(b.get("text", "") for b in payload.get("content", [])
+                    if b.get("type") == "text").strip()
+    return {"summary": text[:800], "reasoning": "", "mode": "ai"}
+
+
+def run_sitrep(ctx):
+    if TRIAGE_MODE == "ai":
+        try:
+            return ai_sitrep(ctx)
+        except Exception as e:
+            result = heuristic_sitrep(ctx)
+            result["reasoning"] = (
+                f"AI situation report unavailable ({str(e)[:60]}) — used "
+                "offline templated summary.")
+            result["mode"] = "heuristic-fallback"
+            return result
+    return heuristic_sitrep(ctx)
+
 
 UNIT_SEED = ["AMB-1024", "AMB-1025", "AMB-1026", "AMB-8871", "AMB-5510", "AMB-2290"]
 
@@ -1097,6 +1310,32 @@ class Store:
         return prioCounts(act)
 
     # ---------- analytics / prediction ----------
+    def situation_context(self):
+        """Compact structured snapshot for the AI/heuristic situation report —
+        deliberately small (not the full state) to keep the AI prompt cheap
+        and fast."""
+        active = [c for c in self.cases if c["status"] < 3]
+        prio_counts = prioCounts(active)
+        delayed = [c for c in active if c.get("delayed")]
+        low_beds = sorted(
+            [h for h in self.hospitals if h["icuBeds"] <= 1],
+            key=lambda h: h["icuBeds"])[:5]
+        open_incidents = [i for i in self.incidents if not i.get("closed_ts")]
+        return {
+            "active_critical": prio_counts.get("critical", 0),
+            "active_urgent": prio_counts.get("urgent", 0),
+            "active_priority": prio_counts.get("priority", 0),
+            "delayed_count": len(delayed),
+            "delayed_ids": [c["id"] for c in delayed][:5],
+            "low_bed_hospitals": [
+                {"name": h["name"], "icu": h["icuBeds"], "gen": h["genBeds"]}
+                for h in low_beds],
+            "open_incidents": [
+                {"id": i["id"], "name": i["name"], "location": i["location"]}
+                for i in open_incidents],
+            "notify_mode": NOTIFY_MODE,
+        }
+
     def analytics(self):
         done = self.completed
 
@@ -1439,7 +1678,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {
                     "ok": True, "service": "life-line", "version": VERSION,
                     "region": STORE.region, "rev": STORE.rev,
-                    "notify_mode": NOTIFY_MODE,
+                    "notify_mode": NOTIFY_MODE, "triage_mode": TRIAGE_MODE,
                     "uptime_s": int(time.time() - STORE.t0),
                     "server_time": iso(now()), "roles": ROLES})
             if path == "/api/events":
@@ -1479,6 +1718,14 @@ class Handler(BaseHTTPRequestHandler):
                         (qs.get("origin") or [""])[0],
                         (qs.get("dest") or [""])[0],
                         (qs.get("priority") or ["urgent"])[0]))
+            if path == "/api/situation-report":
+                if not self._require("state_read"):
+                    return
+                with STORE.lock:
+                    ctx = STORE.situation_context()
+                result = run_sitrep(ctx)
+                result["generated_at"] = iso(now())
+                return self._json(200, result)
             if path == "/api/report.csv":
                 actor = self._require("report_read")
                 if not actor:
@@ -1567,6 +1814,16 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 return self._mutate_and_broadcast(
                     lambda: STORE.close_incident(m.group(1)))
+
+            if path == "/api/triage":
+                actor = self._require("case_create")
+                if not actor:
+                    return
+                data = self._body()
+                result = run_triage(data.get("notes"))
+                if "error" in result:
+                    return self._error(400, result["error"])
+                return self._json(200, result)
 
             if path == "/api/cases":
                 actor = self._require("case_create")
@@ -1810,6 +2067,8 @@ def main():
     print(f" Simulation  : {'ON' if not args.no_sim else 'OFF'}"
           f"   DB: {DB_PATH}", flush=True)
     print(f" SMS/WhatsApp: {'LIVE (Twilio)' if NOTIFY_MODE == 'twilio' else 'simulated'}",
+          flush=True)
+    print(f" AI Triage   : {'LIVE (Anthropic)' if TRIAGE_MODE == 'ai' else 'offline heuristic'}",
           flush=True)
     print(f" SLA         : escalate>{SLA_REGISTER_MIN:g}min · delayed>"
           f"+{DELAY_GRACE_MIN:g}min", flush=True)

@@ -1063,6 +1063,16 @@ function unitsStrip() {
   }).join('')}</div>`;
 }
 
+function sitrepBlock() {
+  return `<div class="dash-head" style="margin-top:28px;"><h2>🤖 AI Situation Report</h2>
+    <div class="sub">One-tap operational briefing, generated from live case &amp; hospital data</div></div>
+  <div class="analytics-panel sitrep-panel">
+    <button class="btn" type="button" data-act="sitrep-run" id="sitrepBtn">Generate situation report</button>
+    <span class="ai-triage-status" id="sitrepStatus"></span>
+    <div class="ai-triage-result" id="sitrepResult" hidden></div>
+  </div>`;
+}
+
 function mciBlock() {
   const incs = App.state.incidents || [];
   const open = incs.filter(i => !i.closed_ts);
@@ -1229,6 +1239,7 @@ function renderDash() {
         ? 'Master view — all hospitals, ambulances, police & traffic'
         : 'All cases & stakeholder access', true);
     html += unitsStrip();
+    html += sitrepBlock();
     html += mciBlock();
     html += toolbarHTML();
     html += `<div id="cmdResults">${adminTable(visibleCases())}<div style="margin-top:20px;">${cardGrid(visibleCases())}</div></div>`;
@@ -1578,7 +1589,7 @@ function exportCase(id) {
 
 /* ================= modals: new case ================= */
 let selectedPrio = 'critical';
-const modalFieldIds = ['fOrigin', 'fDest', 'fAge', 'fDept', 'fAmb', 'fEta', 'fReason'];
+const modalFieldIds = ['fOrigin', 'fDest', 'fAge', 'fDept', 'fAmb', 'fEta', 'fReason', 'fClinicalNotes'];
 
 function setSelectedPrio(p) {
   selectedPrio = p;
@@ -1609,6 +1620,11 @@ function resetModalForm() {
   App.selectedTags.clear();
   document.querySelectorAll('#tagWrap .tagchip').forEach(ch => ch.classList.remove('on'));
   setSelectedPrio('critical');
+  $('aiTriageStatus').textContent = '';
+  $('aiTriageResult').hidden = true;
+  $('aiTriageResult').innerHTML = '';
+  $('fClinicalNotes').value = '';
+  if (micListening && micRecognizer) micRecognizer.stop();
 }
 
 function buildTagChips() {
@@ -1706,6 +1722,165 @@ function localRecommend(dept, origin) {
       return { name: h.name, score: Math.round(score), distance_km: Math.round(dist * 10) / 10, reasons };
     })
     .sort((a, b) => b.score - a.score).slice(0, 5);
+}
+
+/* ---- voice input for AI Triage (Web Speech API, feature-detected) ---- */
+let micRecognizer = null, micListening = false;
+
+function initMicButton() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const btn = $('micBtn');
+  if (!SR) { btn.hidden = true; return; }
+  btn.hidden = false;
+  micRecognizer = new SR();
+  micRecognizer.continuous = false;
+  micRecognizer.interimResults = false;
+  micRecognizer.lang = App.lang === 'hi' ? 'hi-IN' : App.lang === 'mr' ? 'mr-IN' : 'en-IN';
+
+  micRecognizer.onresult = e => {
+    const text = e.results[0][0].transcript;
+    const ta = $('fClinicalNotes');
+    ta.value = (ta.value.trim() ? ta.value.trim() + ' ' : '') + text;
+  };
+  micRecognizer.onerror = () => {
+    $('aiTriageStatus').textContent = 'Mic error — check browser microphone permission.';
+    $('aiTriageStatus').className = 'ai-triage-status warn';
+  };
+  micRecognizer.onend = () => {
+    micListening = false;
+    btn.classList.remove('listening');
+    btn.textContent = '🎙️';
+  };
+
+  btn.onclick = () => {
+    if (micListening) { micRecognizer.stop(); return; }
+    try {
+      micRecognizer.lang = App.lang === 'hi' ? 'hi-IN' : App.lang === 'mr' ? 'mr-IN' : 'en-IN';
+      micRecognizer.start();
+      micListening = true;
+      btn.classList.add('listening');
+      btn.textContent = '⏺️';
+      $('aiTriageStatus').textContent = 'Listening…';
+      $('aiTriageStatus').className = 'ai-triage-status';
+    } catch (e) { /* already started */ }
+  };
+}
+
+/* ---- AI situation report ---- */
+function localHeuristicSitrep() {
+  const active = activeCases();
+  const counts = prioCounts(active);
+  const totalActive = (counts.critical || 0) + (counts.urgent || 0) + (counts.priority || 0);
+  const delayed = active.filter(c => c.delayed);
+  const lowBeds = (App.state.hospitals || []).filter(h => h.icuBeds <= 1)
+    .sort((a, b) => a.icuBeds - b.icuBeds).slice(0, 3);
+  const openIncidents = (App.state.incidents || []).filter(i => !i.closed_ts);
+  const parts = [];
+  parts.push(totalActive
+    ? `${totalActive} active transfer(s) in progress (${counts.critical || 0} critical, ${counts.urgent || 0} urgent, ${counts.priority || 0} priority).`
+    : 'No active transfers — system nominal.');
+  if (delayed.length) parts.push(`${delayed.length} transfer(s) flagged DELAYED beyond ETA (${delayed.map(c => c.id).join(', ')}) — review routing.`);
+  if (lowBeds.length) parts.push(`ICU capacity tight at: ${lowBeds.map(h => `${h.name} (${h.icuBeds} ICU)`).join(', ')}.`);
+  if (openIncidents.length) parts.push(`${openIncidents.length} mass-casualty incident(s) open (${openIncidents.map(i => i.id).join(', ')}).`);
+  return { summary: parts.join(' '), mode: 'heuristic' };
+}
+
+async function runSituationReport() {
+  const btn = $('sitrepBtn'), status = $('sitrepStatus'), result = $('sitrepResult');
+  btn.disabled = true;
+  status.textContent = 'Generating…'; status.className = 'ai-triage-status';
+  result.hidden = true;
+  let r;
+  try {
+    if (App.mode === 'live') r = await api('/api/situation-report');
+    else r = localHeuristicSitrep();
+  } catch (e) {
+    r = localHeuristicSitrep();
+    r.mode = 'heuristic-fallback';
+  }
+  btn.disabled = false;
+  status.textContent = '';
+  const modeLabel = r.mode === 'ai' ? '🤖 AI briefing (Claude)'
+    : r.mode === 'heuristic-fallback' ? '⚠️ Heuristic fallback (AI unavailable)'
+    : '🧮 Offline heuristic (demo mode)';
+  result.hidden = false;
+  result.innerHTML = `<strong>${esc(modeLabel)}</strong><br>${esc(r.summary)}`;
+}
+
+/* ---- AI triage (free-text notes -> priority/dept/tags suggestion) ---- */
+const TRIAGE_CRITICAL_KW = ['cardiac arrest', 'not breathing', 'unconscious', 'unresponsive',
+  'stemi', 'heart attack', 'stroke', 'severe bleeding', 'gunshot', 'stab wound', 'seizure',
+  'anaphyla', 'choking', 'drowning', 'severe trauma', 'multiple injuries', 'no pulse', 'collapsed'];
+const TRIAGE_URGENT_KW = ['chest pain', 'breathless', 'shortness of breath', 'fracture',
+  'high fever', 'dehydration', 'labor', 'labour', 'pregnan', 'burns', 'allergic reaction',
+  'fall', 'accident', 'rta', 'road traffic', 'head injury', 'bleeding'];
+const TRIAGE_DEPT_KW = {
+  'Cardiac ICU': ['chest pain', 'heart', 'cardiac', 'stemi', 'palpitation'],
+  'Neurosurgery': ['head trauma', 'head injury', 'stroke', 'seizure', 'neuro', 'brain', 'spinal'],
+  'Trauma': ['accident', 'rta', 'road traffic', 'fracture', 'gunshot', 'stab', 'trauma', 'fall'],
+  'Obstetric ICU': ['labor', 'labour', 'pregnan', 'delivery', 'obstetric'],
+  'Nephrology': ['dialysis', 'kidney', 'renal'],
+  'Pediatric': ['child', 'infant', 'newborn', 'toddler'],
+  'Burns Unit': ['burn', 'scald'],
+};
+const TRIAGE_TAG_KW = {
+  'Ventilator': ['not breathing', 'breathless', 'respiratory', 'ventilat', 'shortness of breath'],
+  'Defibrillator': ['cardiac arrest', 'heart attack', 'stemi', 'arrhythmia', 'no pulse'],
+  'Blood Onboard': ['bleeding', 'hemorrhage', 'haemorrhage', 'blood loss', 'stab', 'gunshot'],
+  'Incubator': ['infant', 'newborn', 'premature', 'preterm'],
+  'Isolation': ['infectious', 'contagious', 'isolation'],
+  'Spinal Board': ['spinal', 'head trauma', 'fall from height', 'rta'],
+  'Bariatric': ['obese', 'bariatric'],
+};
+
+function localHeuristicTriage(notes) {
+  const t = notes.toLowerCase();
+  let priority = 'priority';
+  if (TRIAGE_CRITICAL_KW.some(k => t.includes(k))) priority = 'critical';
+  else if (TRIAGE_URGENT_KW.some(k => t.includes(k))) priority = 'urgent';
+  let dept = 'Emergency';
+  for (const [name, kws] of Object.entries(TRIAGE_DEPT_KW)) {
+    if (kws.some(k => t.includes(k))) { dept = name; break; }
+  }
+  const tags = Object.entries(TRIAGE_TAG_KW).filter(([, kws]) => kws.some(k => t.includes(k))).map(([tag]) => tag);
+  const m = t.match(/(\d{1,3})\s*(?:yo\b|y\/o\b|years?\b|yrs?\b)/i);
+  const age = m ? parseInt(m[1], 10) : null;
+  return { priority, dept, tags: tags.slice(0, 3), age,
+    reasoning: 'Offline keyword heuristic (demo mode — no live server).', mode: 'heuristic' };
+}
+
+async function runAiTriage() {
+  const notes = $('fClinicalNotes').value.trim();
+  const status = $('aiTriageStatus'), result = $('aiTriageResult'), btn = $('aiTriageBtn');
+  if (!notes) { status.textContent = 'Enter symptoms/notes first.'; status.className = 'ai-triage-status warn'; return; }
+  btn.disabled = true;
+  status.textContent = 'Thinking…'; status.className = 'ai-triage-status';
+  result.hidden = true;
+  let r;
+  try {
+    if (App.mode === 'live') r = await api('/api/triage', { method: 'POST', body: JSON.stringify({ notes }) });
+    else r = localHeuristicTriage(notes);
+  } catch (e) {
+    r = localHeuristicTriage(notes);
+    r.reasoning = 'AI triage unavailable — used offline heuristic fallback.';
+    r.mode = 'heuristic-fallback';
+  }
+  btn.disabled = false;
+  setSelectedPrio(r.priority);
+  if (r.dept) $('fDept').value = r.dept;
+  if (r.age && !$('fAge').value.trim()) $('fAge').value = r.age;
+  if (!$('fReason').value.trim()) $('fReason').value = notes.slice(0, 120);
+  (r.tags || []).forEach(tag => {
+    App.selectedTags.add(tag);
+    const chip = document.querySelector(`#tagWrap .tagchip[data-tag="${tag}"]`);
+    if (chip) chip.classList.add('on');
+  });
+  const modeLabel = r.mode === 'ai' ? '🤖 AI suggestion (Claude)'
+    : r.mode === 'heuristic-fallback' ? '⚠️ Heuristic fallback (AI unavailable)'
+    : '🧮 Offline heuristic (demo mode)';
+  status.textContent = '';
+  result.hidden = false;
+  result.innerHTML = `<strong>${esc(modeLabel)}</strong><br>${esc(r.reasoning || '')}`;
 }
 
 async function fetchSuggestions() {
@@ -1924,6 +2099,8 @@ function bindUI() {
   setSelectedPrio('critical');
   $('modalClose').onclick = closeModal;
   $('modalCancel').onclick = closeModal;
+  $('aiTriageBtn').onclick = runAiTriage;
+  initMicButton();
   $('modalOverlay').addEventListener('click', e => { if (e.target === $('modalOverlay')) closeModal(); });
   $('fDest').addEventListener('input', updateDestBedHint);
   $('fOrigin').addEventListener('input', () => clearFieldError('fOrigin', 'errOrigin'));
@@ -2002,6 +2179,7 @@ function bindUI() {
       else if (act.dataset.act === 'inc-declare') doDeclareIncident();
       else if (act.dataset.act === 'inc-close') doCloseIncident(id);
       else if (act.dataset.act === 'csv-export') doExportCSV();
+      else if (act.dataset.act === 'sitrep-run') runSituationReport();
       return;
     }
     const fp = e.target.closest('.fchip');
