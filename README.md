@@ -32,11 +32,11 @@ read in five seconds.
 
 ## Demo & Screenshots
 
-| Command Center | AI Triage |
+| Responder | Command center |
 |---|---|
 | ![Command Center dashboard](docs/screenshots/command-center.png) | ![AI Triage suggestion](docs/screenshots/ai-triage.png) |
 
-| AI Situation Report | Live Map |
+| AI Situation Report | Blood Bank  |
 |---|---|
 | ![AI Situation Report](docs/screenshots/situation-report.png) | ![Live operations map](docs/screenshots/live-map.png) |
 
