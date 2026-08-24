@@ -30,6 +30,16 @@ read in five seconds.
 | SMS/WhatsApp dispatch | Simulated unless Twilio credentials are configured — status shown honestly per message |
 | Hospital bed counts | Simulated demo data for Mumbai-area hospitals |
 
+## Demo & Screenshots
+
+| Command Center | AI Triage |
+|---|---|
+| ![Command Center dashboard](docs/screenshots/command-center.png) | ![AI Triage suggestion](docs/screenshots/ai-triage.png) |
+
+| AI Situation Report | Live Map |
+|---|---|
+| ![AI Situation Report](docs/screenshots/situation-report.png) | ![Live operations map](docs/screenshots/live-map.png) |
+
 ## Installation
 
 ### Prerequisites
