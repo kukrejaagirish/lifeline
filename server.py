@@ -2,35 +2,15 @@
 """
 Life-Line v3 — Emergency Transfer Coordination Server.
 
-Standard library ONLY. Features:
-  * REST API + Server-Sent Events real-time fan-out
-  * SQLite durable storage (write-through) with legacy state.json import
-  * Token auth, per-role permissions, optional password accounts (PBKDF2)
-  * Notification engine: SMS/WhatsApp via Twilio if configured, else simulated
-  * Smart destination recommendation (dept match + beds + haversine distance)
-  * ETA prediction from historical transfers; next-hour demand estimate
-  * SLA engine: auto-escalation of stale cases, delayed-transfer flagging
-  * Mass-casualty incidents (MCI) with triage grouping
-  * Handover proof-of-delivery checklist per case
-  * Blood-bank availability board (simulated walk)
-  * Equipment tags (ventilator, isolation, incubator, ...)
-  * CSV shift reports, rate limiting, optional HTTPS, pluggable regions
+Stdlib only, no pip install. REST API + SSE for live sync, SQLite storage,
+role-based auth, and a couple of optional integrations (Twilio for real
+SMS/WhatsApp, Claude for real AI triage/situation-report) that fall back to
+honest simulated/heuristic behavior when unconfigured — see README for the
+full env var list.
 
 Usage:
     python server.py [--host 0.0.0.0] [--port 8787] [--fresh] [--no-sim]
                      [--region mumbai] [--certfile F] [--keyfile F]
-
-Twilio (optional, enables real SMS/WhatsApp):
-    set LIFELINE_TWILIO_SID=ACxxxx
-    set LIFELINE_TWILIO_AUTH=xxxx
-    set LIFELINE_TWILIO_FROM=+1xxxx   (or whatsapp:+1xxxx)
-
-AI Triage (optional, enables real Claude-powered triage suggestions):
-    set LIFELINE_ANTHROPIC_KEY=sk-ant-xxxx
-    set LIFELINE_ANTHROPIC_MODEL=claude-sonnet-5   (optional override)
-    Without a key, /api/triage runs an offline keyword heuristic instead —
-    the feature always works, and the response always reports which mode
-    (ai / heuristic / heuristic-fallback) produced the suggestion.
 """
 
 import argparse
