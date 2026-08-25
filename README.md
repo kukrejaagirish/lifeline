@@ -3,6 +3,8 @@
 A live-synced coordination board for ambulance-to-hospital handoffs, built as
 a zero-dependency Python + vanilla JS app (no pip install, no build step).
 
+**Live demo:** [lifeline-production-141a.up.railway.app](https://lifeline-production-141a.up.railway.app)
+
 ## Why
 
 In Indian metros, ambulance-to-hospital handoffs lose time in dumb ways: a
