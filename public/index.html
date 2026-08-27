@@ -35,12 +35,12 @@
     <div class="login-sub">Choose your role. Responders submit transfer reports from the field — Command Center receives them the moment they're filed.</div>
     <div class="login-options">
       <button class="login-card" id="loginResponder" type="button">
-        <div class="lc-icon">🚑</div>
+        <div class="lc-icon ic" data-icon="ambulance"></div>
         <div class="lc-label">Responder</div>
         <div class="lc-desc">Field unit — claim runs, submit reports &amp; update status</div>
       </button>
       <button class="login-card" id="loginCommand" type="button">
-        <div class="lc-icon">🛰️</div>
+        <div class="lc-icon ic" data-icon="satellite"></div>
         <div class="lc-label">Command Center</div>
         <div class="lc-desc">Master view — monitor &amp; coordinate all units live</div>
       </button>
@@ -48,12 +48,12 @@
     <details class="more-roles" id="moreRoles">
       <summary>All stakeholder roles</summary>
       <div class="mini-roles">
-        <button class="login-mini" type="button" data-role="sending"><span class="mr">🏥</span>Sending Hospital</button>
-        <button class="login-mini" type="button" data-role="dest"><span class="mr">🛏️</span>Destination Hospital</button>
-        <button class="login-mini" type="button" data-role="attendant"><span class="mr">👨‍👩‍👧</span>Patient Attendant</button>
-        <button class="login-mini" type="button" data-role="police"><span class="mr">👮</span>Police</button>
-        <button class="login-mini" type="button" data-role="traffic"><span class="mr">🚦</span>Traffic Control</button>
-        <button class="login-mini" type="button" data-role="admin"><span class="mr">🗂️</span>Admin</button>
+        <button class="login-mini" type="button" data-role="sending"><span class="mr ic" data-icon="hospital"></span>Sending Hospital</button>
+        <button class="login-mini" type="button" data-role="dest"><span class="mr ic" data-icon="bed"></span>Destination Hospital</button>
+        <button class="login-mini" type="button" data-role="attendant"><span class="mr ic" data-icon="family"></span>Patient Attendant</button>
+        <button class="login-mini" type="button" data-role="police"><span class="mr ic" data-icon="police"></span>Police</button>
+        <button class="login-mini" type="button" data-role="traffic"><span class="mr ic" data-icon="traffic"></span>Traffic Control</button>
+        <button class="login-mini" type="button" data-role="admin"><span class="mr ic" data-icon="admin"></span>Admin</button>
       </div>
     </details>
     <div class="login-id-row">
@@ -81,7 +81,7 @@
       <div class="session-info" id="sessionInfo">
         <span class="si-role" id="siRole"></span>
         <span class="si-id" id="siId"></span>
-        <button class="si-logout" id="logoutBtn" type="button">Switch role ↺</button>
+        <button class="si-logout" id="logoutBtn" type="button">Switch role <span class="ic ic-sm" data-icon="refresh"></span></button>
       </div>
       <div class="hero-tools">
         <span class="clock" id="brandClock">--:--:--</span>
@@ -91,11 +91,11 @@
           <option value="hi">हिं</option>
           <option value="mr">मरा</option>
         </select>
-        <button class="icon-btn on" id="soundBtn" type="button" title="Toggle alert sounds">🔔</button>
-        <button class="icon-btn on" id="voiceBtn" type="button" title="Voice announcements (V)">🗣</button>
-        <button class="icon-btn" id="themeBtn" type="button" title="Light / dark theme (T)">🌙</button>
-        <button class="icon-btn" id="mapBtn" type="button" title="Live map (M)">🗺️</button>
-        <button class="icon-btn" id="kbdBtn" type="button" title="Keyboard shortcuts (?)">⌨</button>
+        <button class="icon-btn on" id="soundBtn" type="button" title="Toggle alert sounds"><span class="ic" data-icon="bell"></span></button>
+        <button class="icon-btn on" id="voiceBtn" type="button" title="Voice announcements (V)"><span class="ic" data-icon="megaphone"></span></button>
+        <button class="icon-btn" id="themeBtn" type="button" title="Light / dark theme (T)"><span class="ic" data-icon="moon"></span></button>
+        <button class="icon-btn" id="mapBtn" type="button" title="Live map (M)"><span class="ic" data-icon="map"></span></button>
+        <button class="icon-btn" id="kbdBtn" type="button" title="Keyboard shortcuts (?)"><span class="ic" data-icon="keyboard"></span></button>
       </div>
     </div>
   </div>
@@ -115,7 +115,7 @@
       <span><i class="lg-dot lg-green"></i><span data-i18n="legend_beds">Beds available</span></span>
       <span><i class="lg-dot lg-orange"></i><span data-i18n="legend_low">Low beds</span></span>
       <span><i class="lg-dot lg-red"></i><span data-i18n="legend_full">Full</span></span>
-      <span>🚑 <span data-i18n="legend_units">Units in transit</span></span>
+      <span><span class="ic ic-sm" data-icon="ambulance"></span> <span data-i18n="legend_units">Units in transit</span></span>
     </div>
     <button class="close-x" id="mapClose" aria-label="Close map">×</button>
   </div>
@@ -132,11 +132,11 @@
     </div>
     <div class="modal-body">
       <div class="field ai-triage-field">
-        <label for="fClinicalNotes">🤖 AI Triage <span class="ai-triage-hint">— describe symptoms, get a suggestion</span></label>
+        <label for="fClinicalNotes"><span class="ic" data-icon="bot"></span> AI Triage <span class="ai-triage-hint">— describe symptoms, get a suggestion</span></label>
         <textarea id="fClinicalNotes" rows="2" placeholder="e.g. 61yo male, sudden chest pain radiating to left arm, sweating, breathless"></textarea>
         <div class="ai-triage-row">
           <button type="button" class="btn ghost sm" id="aiTriageBtn">Suggest priority &amp; department</button>
-          <button type="button" class="btn ghost sm mic-btn" id="micBtn" title="Speak symptoms" hidden>🎙️</button>
+          <button type="button" class="btn ghost sm mic-btn" id="micBtn" title="Speak symptoms" hidden><span class="ic" data-icon="mic"></span></button>
           <span class="ai-triage-status" id="aiTriageStatus"></span>
         </div>
         <div class="ai-triage-result" id="aiTriageResult" hidden></div>
@@ -144,9 +144,9 @@
       <div class="field">
         <label>Priority</label>
         <div class="prio-select" id="prioSelect">
-          <button type="button" class="prio-opt" data-p="critical">🔴 Critical</button>
-          <button type="button" class="prio-opt" data-p="urgent">🟠 Urgent</button>
-          <button type="button" class="prio-opt" data-p="priority">🟡 Priority</button>
+          <button type="button" class="prio-opt" data-p="critical"><span class="ic ic-sm ic-critical" data-icon="dot"></span> Critical</button>
+          <button type="button" class="prio-opt" data-p="urgent"><span class="ic ic-sm ic-urgent" data-icon="dot"></span> Urgent</button>
+          <button type="button" class="prio-opt" data-p="priority"><span class="ic ic-sm ic-priority" data-icon="dot"></span> Priority</button>
         </div>
       </div>
       <div class="field-row">
@@ -200,8 +200,8 @@
 <div class="detail-overlay" id="detailOverlay"></div>
 <div class="detail-panel" id="detailPanel"></div>
 
-<button class="contacts-fab" id="contactsFab" type="button">📞 Emergency Numbers</button>
-<button class="contacts-fab hosp-fab" id="hospFab" type="button">🏥 Hospital Directory</button>
+<button class="contacts-fab" id="contactsFab" type="button"><span class="ic" data-icon="phone"></span> Emergency Numbers</button>
+<button class="contacts-fab hosp-fab" id="hospFab" type="button"><span class="ic" data-icon="hospital"></span> Hospital Directory</button>
 
 <div class="overlay contacts-modal" id="contactsOverlay">
   <div class="modal">
@@ -257,6 +257,7 @@
 <div id="toasts" role="status" aria-live="polite"></div>
 </div><!-- /appRoot -->
 
+<script src="icons.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

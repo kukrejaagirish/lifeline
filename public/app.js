@@ -9,9 +9,9 @@ const timeStr = d => { const x = new Date(d); return pad(x.getHours()) + ':' + p
 const minsAgo = d => Math.max(0, Math.round((Date.now() - new Date(d).getTime()) / 60000));
 
 const PRIO = {
-  critical: { label: 'Critical', dot: '🔴' },
-  urgent: { label: 'Urgent', dot: '🟠' },
-  priority: { label: 'Priority', dot: '🟡' },
+  critical: { label: 'Critical', dot: icon('dot', 'ic ic-sm ic-critical') },
+  urgent: { label: 'Urgent', dot: icon('dot', 'ic ic-sm ic-urgent') },
+  priority: { label: 'Priority', dot: icon('dot', 'ic ic-sm ic-priority') },
 };
 const STATUS = ['REGISTERED', 'IN TRANSIT', 'ARRIVING', 'ARRIVED', 'CANCELLED'];
 const PORD = { critical: 0, urgent: 1, priority: 2 };
@@ -106,17 +106,17 @@ const LANGS = {
     critical: 'Critical', urgent: 'Urgent', priority: 'Priority',
     min_eta: 'min ETA',
     my_runs: 'My runs', unassigned_queue: 'Unassigned queue',
-    claim_run: 'Claim run', advance_status: 'Advance status →',
+    claim_run: 'Claim run', advance_status: 'Advance status',
     mark_arrived: 'Mark arrived', flag_traffic: 'Flag heavy traffic',
-    open_details: 'Open details', escalate_priority: '⬆ Escalate priority',
-    cancel_case: '✕ Cancel case', send: 'Send',
+    open_details: 'Open details', escalate_priority: 'Escalate priority',
+    cancel_case: 'Cancel case', send: 'Send',
     analytics: 'Transfer Analytics', activity_log: 'Recent Activity Log',
     notifications: 'Notifications Log', blood_bank: 'Blood Bank Board (Live)',
     mci_title: 'Mass Casualty Incident (MCI)',
     declare_mci: 'Declare Incident', close_incident: 'Close',
     incident_name: 'Incident name', location_ph: 'Location (e.g. Bandra)',
-    handover_pod: 'Handover Checklist (POD)', print_sheet: '🖨 Print handover sheet',
-    csv_report: '⬇ CSV Report', map_title: 'Live Operations Map',
+    handover_pod: 'Handover Checklist (POD)', print_sheet: 'Print handover sheet',
+    csv_report: 'CSV Report', map_title: 'Live Operations Map',
     legend_beds: 'Beds available', legend_low: 'Low beds', legend_full: 'Full',
     legend_units: 'Units in transit', delayed: 'DELAYED',
     form_equipment: 'Equipment / capability requirements',
@@ -131,17 +131,17 @@ const LANGS = {
     critical: 'क्रांटिकल', urgent: 'अत्यावश्यक', priority: 'प्राथमिकता',
     min_eta: 'मिनट ETA',
     my_runs: 'मेरे रन', unassigned_queue: 'असाइन नहीं किया गया कतार',
-    claim_run: 'रन लें', advance_status: 'स्थिति आगे बढ़ें →',
+    claim_run: 'रन लें', advance_status: 'स्थिति आगे बढ़ें',
     mark_arrived: 'पहुँच गए', flag_traffic: 'भारी ट्रैफ़िक फ़्लैग करें',
-    open_details: 'विवरण खोलें', escalate_priority: '⬆ प्राथमिकता बढ़ाएँ',
-    cancel_case: '✕ केस रद्द करें', send: 'भेजें',
+    open_details: 'विवरण खोलें', escalate_priority: 'प्राथमिकता बढ़ाएँ',
+    cancel_case: 'केस रद्द करें', send: 'भेजें',
     analytics: 'ट्रांसफर विश्लेषण', activity_log: 'हाल की गतिविधि',
     notifications: 'अधिसूचना लॉग', blood_bank: 'रक्त बैंक बोर्ड (लाइव)',
     mci_title: 'सामूहिक-हादसा घटनाएँ (MCI)',
     declare_mci: 'घटना घोषित करें', close_incident: 'बंद करें',
     incident_name: 'घटना का नाम', location_ph: 'स्थान (जैसे Bandra)',
-    handover_pod: 'हैंडओवर चेकलिस्ट (POD)', print_sheet: '🖨 हैंडओवर शीट प्रिंट करें',
-    csv_report: '⬇ CSV रिपोर्ट', map_title: 'लाइव ऑपरेशन मैप',
+    handover_pod: 'हैंडओवर चेकलिस्ट (POD)', print_sheet: 'हैंडओवर शीट प्रिंट करें',
+    csv_report: 'CSV रिपोर्ट', map_title: 'लाइव ऑपरेशन मैप',
     legend_beds: 'बेड उपलब्ध', legend_low: 'कम बेड', legend_full: 'भरा हुआ',
     legend_units: 'यात्रा पर यूनिट', delayed: 'विलंबित',
     form_equipment: 'उपकरण / क्षमता आवश्यकताएँ',
@@ -156,17 +156,17 @@ const LANGS = {
     critical: 'गंभीर', urgent: 'तातडीचे', priority: 'प्राधान्य',
     min_eta: 'मिनिटे ETA',
     my_runs: 'माझे रन', unassigned_queue: 'नियुक्त नसलेली रांग',
-    claim_run: 'रन घ्या', advance_status: 'स्थिती पुढे न्या →',
+    claim_run: 'रन घ्या', advance_status: 'स्थिती पुढे न्या',
     mark_arrived: 'पोहोचलो', flag_traffic: 'मोठा ट्रॅफिक फ्लॅग करा',
-    open_details: 'तपशील उघडा', escalate_priority: '⬆ प्राधान्य वाढवा',
-    cancel_case: '✕ केस रद्द करा', send: 'पाठवा',
+    open_details: 'तपशील उघडा', escalate_priority: 'प्राधान्य वाढवा',
+    cancel_case: 'केस रद्द करा', send: 'पाठवा',
     analytics: 'ट्रान्सफर विश्लेषण', activity_log: 'अलीकडील क्रियाकलाप',
     notifications: 'सूचना नोंद', blood_bank: 'रक्तपेढी बोर्ड (थेट)',
     mci_title: 'मोठ्या अपघात घटना (MCI)',
     declare_mci: 'घटना घोषित करा', close_incident: 'बंद करा',
     incident_name: 'घटनेचे नाव', location_ph: 'ठिकाण (उदा. Bandra)',
-    handover_pod: 'हस्तांतरण चेकलिस्ट (POD)', print_sheet: '🖨 हस्तांतरण पत्रक प्रिंट करा',
-    csv_report: '⬇ CSV अहवाल', map_title: 'थेट ऑपरेशन नकाशा',
+    handover_pod: 'हस्तांतरण चेकलिस्ट (POD)', print_sheet: 'हस्तांतरण पत्रक प्रिंट करा',
+    csv_report: 'CSV अहवाल', map_title: 'थेट ऑपरेशन नकाशा',
     legend_beds: 'बेड उपलब्ध', legend_low: 'कमी बेड', legend_full: 'भरलेले',
     legend_units: 'प्रवासावर असलेल्या युनिट', delayed: 'उशीर',
     form_equipment: 'उपकरण / क्षमता आवश्यकता',
@@ -364,8 +364,8 @@ async function boot() {
   } catch (e) { live = false; }
   App.mode = live ? 'live' : 'offline';
   $('loginFootnote').innerHTML = live
-    ? '🟢 Connected to Life-Line server · real-time sync across devices &amp; tabs'
-    : '🟠 Offline demo mode · mock data · syncs across tabs of this browser only';
+    ? `${icon('wifi','ic ic-sm ic-ok')} Connected to Life-Line server · real-time sync across devices &amp; tabs`
+    : `${icon('wifiOff','ic ic-sm ic-urgent')} Offline demo mode · mock data · syncs across tabs of this browser only`;
 
   const sr = sessionStorage.getItem('ll_role');
   const su = sessionStorage.getItem('ll_unit') || '';
@@ -384,8 +384,8 @@ function showLoginError(msg) {
   const el = $('loginError');
   if (el) { el.textContent = msg; el.hidden = false; }
   $('loginFootnote').innerHTML = App.mode === 'live'
-    ? '🟢 Connected to Life-Line server · real-time sync across devices &amp; tabs'
-    : '🟠 Offline demo mode · mock data · syncs across tabs of this browser only';
+    ? `${icon('wifi','ic ic-sm ic-ok')} Connected to Life-Line server · real-time sync across devices &amp; tabs`
+    : `${icon('wifiOff','ic ic-sm ic-urgent')} Offline demo mode · mock data · syncs across tabs of this browser only`;
 }
 
 async function enterApp(role, unit) {
@@ -1044,13 +1044,13 @@ function toolbarHTML() {
   return `<div class="toolbar">
     <input class="tool-search" id="cmdSearch" placeholder="Search case ID, hospital, department, unit…" value="${esc(f.q)}">
     <div class="chip-row">
-      ${chip('all', 'ALL')}${chip('critical', '🔴 CRITICAL')}${chip('urgent', '🟠 URGENT')}${chip('priority', '🟡 PRIORITY')}
+      ${chip('all', 'ALL')}${chip('critical', `${icon('dot','ic ic-sm ic-critical')} CRITICAL`)}${chip('urgent', `${icon('dot','ic ic-sm ic-urgent')} URGENT`)}${chip('priority', `${icon('dot','ic ic-sm ic-priority')} PRIORITY`)}
     </div>
     <select class="sort-sel" id="sortSel" aria-label="Sort cases">
       <option value="priority"${f.sort === 'priority' ? ' selected' : ''}>Sort: Priority</option>
       <option value="eta"${f.sort === 'eta' ? ' selected' : ''}>Sort: ETA</option>
     </select>
-    ${canDo('assign') ? `<button class="btn small ghost" type="button" data-act="csv-export">${t('csv_report')}</button>` : ''}
+    ${canDo('assign') ? `<button class="btn small ghost" type="button" data-act="csv-export">${icon('download','ic ic-sm')} ${t('csv_report')}</button>` : ''}
   </div>`;
 }
 
@@ -1064,7 +1064,7 @@ function unitsStrip() {
 }
 
 function sitrepBlock() {
-  return `<div class="dash-head" style="margin-top:28px;"><h2>🤖 AI Situation Report</h2>
+  return `<div class="dash-head" style="margin-top:28px;"><h2>${icon('bot','ic')} AI Situation Report</h2>
     <div class="sub">One-tap operational briefing, generated from live case &amp; hospital data</div></div>
   <div class="analytics-panel sitrep-panel">
     <button class="btn" type="button" data-act="sitrep-run" id="sitrepBtn">Generate situation report</button>
@@ -1082,7 +1082,7 @@ function mciBlock() {
       const c = i.counts || {};
       const total = (c.critical || 0) + (c.urgent || 0) + (c.priority || 0);
       return `<div class="incident-banner" data-inc="${esc(i.id)}">
-        <span class="ib-title">🚨 ${esc(i.id)} · ${esc(i.name)}</span>
+        <span class="ib-title">${icon('siren','ic ic-sm ic-critical')} ${esc(i.id)} · ${esc(i.name)}</span>
         <span class="ib-meta">${esc(i.location || '—')} · opened ${timeStr(i.opened_ts)} · ${total} active case${total === 1 ? '' : 's'} linked</span>
         ${canDo('assign') ? `<button class="btn small danger" type="button" data-act="inc-close" data-id="${esc(i.id)}">${t('close_incident')}</button>` : ''}
       </div>`;
@@ -1092,7 +1092,7 @@ function mciBlock() {
     inner += `<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
       <input id="incName" placeholder="${t('incident_name')}" maxlength="80" style="max-width:220px;">
       <input id="incLoc" placeholder="${t('location_ph')}" maxlength="120" style="max-width:200px;">
-      <button class="btn small warn" type="button" data-act="inc-declare">🚨 ${t('declare_mci')}</button>
+      <button class="btn small warn" type="button" data-act="inc-declare">${icon('siren','ic ic-sm')} ${t('declare_mci')}</button>
     </div>`;
   }
   if (!inner) return '';
@@ -1228,7 +1228,7 @@ function renderDash() {
     const congested = active.filter(c => c.traffic === 'Heavy congestion');
     html += headBlock('Traffic Coordination', 'Live congestion & route status per case', false);
     if (congested.length) {
-      html += `<div class="alert-box"><span class="ic">⚠️</span><div class="txt"><strong>${congested.length} case(s) flagged</strong> — heavy congestion detected on planned route. Alternative route recommended.</div></div>`;
+      html += `<div class="alert-box"><span class="ic">${icon('alertTriangle','ic')}</span><div class="txt"><strong>${congested.length} case(s) flagged</strong> — heavy congestion detected on planned route. Alternative route recommended.</div></div>`;
     }
     html += statRow(counts, active.length);
     html += cardGrid(active);
@@ -1260,7 +1260,7 @@ function renderDash() {
     html += '<div class="queue-h">' + t('unassigned_queue') + '</div>';
     html += queue.length
       ? queue.map(runCardHTML).join('')
-      : '<div class="empty">Every active case has a unit. 🎉</div>';
+      : `<div class="empty">Every active case has a unit. ${icon('checkCircle','ic ic-sm ic-ok')}</div>`;
   } else if (App.role === 'attendant') {
     html += headBlock('Patient Attendant', "Track your family member's transfer", false);
     if (!active.length) {
@@ -1360,10 +1360,10 @@ function buildDetail(c, events, notes, units, editable) {
     btns.push(`<button class="btn small ghost" type="button" data-act="flag" data-id="${c.id}">${t('flag_traffic')}</button>`);
   }
   if (editable && canDo('escalate') && c.priority !== 'critical') {
-    btns.push(`<button class="btn small warn" type="button" data-act="escalate" data-id="${c.id}">${t('escalate_priority')}</button>`);
+    btns.push(`<button class="btn small warn" type="button" data-act="escalate" data-id="${c.id}">${icon('chevronUp','ic ic-sm')} ${t('escalate_priority')}</button>`);
   }
   if (editable && canDo('cancel')) {
-    btns.push(`<button class="btn small danger" type="button" data-act="cancel" data-id="${c.id}">${t('cancel_case')}</button>`);
+    btns.push(`<button class="btn small danger" type="button" data-act="cancel" data-id="${c.id}">${icon('close','ic ic-sm')} ${t('cancel_case')}</button>`);
   }
 
   const assignSel = canDo('assign') && editable ? `
@@ -1398,7 +1398,7 @@ function buildDetail(c, events, notes, units, editable) {
       <div class="dp-row"><span class="k">Traffic</span><span class="v">${esc(c.traffic)}</span></div>
       <div class="dp-row"><span class="k">ETA</span><span class="v">${c.status < 3 ? dispEta(c) + ' min' : '—'}${c.delayed ? ' · <b style="color:var(--critical)">DELAYED</b>' : ''}</span></div>
       ${c.bed_kind ? `<div class="dp-row"><span class="k">Bed</span><span class="v" style="color:var(--priority)">${c.bed_kind.toUpperCase()} RESERVED</span></div>` : ''}
-      ${c.incident_id ? `<div class="dp-row"><span class="k">Incident</span><span class="v" style="color:var(--critical)">🚨 ${esc(c.incident_id)}</span></div>` : ''}
+      ${c.incident_id ? `<div class="dp-row"><span class="k">Incident</span><span class="v" style="color:var(--critical)">${icon('siren','ic ic-sm')} ${esc(c.incident_id)}</span></div>` : ''}
       ${c.tags && c.tags.length ? `<div class="dp-row"><span class="k">Equipment</span><span class="v">${c.tags.map(x => `<span class="tagchip-mini">${esc(x)}</span>`).join('')}</span></div>` : ''}
       ${timelineHTML(c)}
       ${handoverHTML(c)}
@@ -1422,8 +1422,8 @@ function buildDetail(c, events, notes, units, editable) {
             </div>`).join('') || '<div class="empty" style="padding:18px;">No logged activity.</div>'}
         </div>
       </div>
-      <button class="btn ghost small" style="width:100%;margin-top:16px;" type="button" data-act="print-sheet" data-id="${c.id}">${t('print_sheet')}</button>
-      <button class="btn ghost small" style="width:100%;margin-top:8px;" type="button" data-act="export" data-id="${c.id}">⬇ Download case summary (PDF)</button>
+      <button class="btn ghost small" style="width:100%;margin-top:16px;" type="button" data-act="print-sheet" data-id="${c.id}">${icon('printer','ic ic-sm')} ${t('print_sheet')}</button>
+      <button class="btn ghost small" style="width:100%;margin-top:8px;" type="button" data-act="export" data-id="${c.id}">${icon('download','ic ic-sm')} Download case summary (PDF)</button>
     </div>`;
 }
 
@@ -1435,7 +1435,7 @@ function handoverHTML(c) {
   const allDone = doneCount === items.length;
   return `<div style="margin-top:18px;">
     <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--dim);margin-bottom:8px;">
-      ${t('handover_pod')} — ${doneCount}/${items.length}${allDone ? ' · ✅ POD COMPLETE' : ''}
+      ${t('handover_pod')} — ${doneCount}/${items.length}${allDone ? ` · ${icon('checkCircle','ic ic-sm ic-ok')} POD COMPLETE` : ''}
     </div>
     ${items.map(it => {
       const st = hv[it.k];
@@ -1749,7 +1749,7 @@ function initMicButton() {
   micRecognizer.onend = () => {
     micListening = false;
     btn.classList.remove('listening');
-    btn.textContent = '🎙️';
+    btn.innerHTML = icon('mic', 'ic');
   };
 
   btn.onclick = () => {
@@ -1759,7 +1759,7 @@ function initMicButton() {
       micRecognizer.start();
       micListening = true;
       btn.classList.add('listening');
-      btn.textContent = '⏺️';
+      btn.innerHTML = icon('recordDot', 'ic ic-critical');
       $('aiTriageStatus').textContent = 'Listening…';
       $('aiTriageStatus').className = 'ai-triage-status';
     } catch (e) { /* already started */ }
@@ -1800,11 +1800,14 @@ async function runSituationReport() {
   }
   btn.disabled = false;
   status.textContent = '';
-  const modeLabel = r.mode === 'ai' ? '🤖 AI briefing (Claude)'
-    : r.mode === 'heuristic-fallback' ? '⚠️ Heuristic fallback (AI unavailable)'
-    : '🧮 Offline heuristic (demo mode)';
+  const modeIcon = r.mode === 'ai' ? icon('bot','ic ic-sm')
+    : r.mode === 'heuristic-fallback' ? icon('alertTriangle','ic ic-sm ic-urgent')
+    : icon('calculator','ic ic-sm');
+  const modeLabel = r.mode === 'ai' ? 'AI briefing (Claude)'
+    : r.mode === 'heuristic-fallback' ? 'Heuristic fallback (AI unavailable)'
+    : 'Offline heuristic (demo mode)';
   result.hidden = false;
-  result.innerHTML = `<strong>${esc(modeLabel)}</strong><br>${esc(r.summary)}`;
+  result.innerHTML = `<strong>${modeIcon} ${esc(modeLabel)}</strong><br>${esc(r.summary)}`;
 }
 
 /* ---- AI triage (free-text notes -> priority/dept/tags suggestion) ---- */
@@ -1875,12 +1878,15 @@ async function runAiTriage() {
     const chip = document.querySelector(`#tagWrap .tagchip[data-tag="${tag}"]`);
     if (chip) chip.classList.add('on');
   });
-  const modeLabel = r.mode === 'ai' ? '🤖 AI suggestion (Claude)'
-    : r.mode === 'heuristic-fallback' ? '⚠️ Heuristic fallback (AI unavailable)'
-    : '🧮 Offline heuristic (demo mode)';
+  const modeIcon = r.mode === 'ai' ? icon('bot','ic ic-sm')
+    : r.mode === 'heuristic-fallback' ? icon('alertTriangle','ic ic-sm ic-urgent')
+    : icon('calculator','ic ic-sm');
+  const modeLabel = r.mode === 'ai' ? 'AI suggestion (Claude)'
+    : r.mode === 'heuristic-fallback' ? 'Heuristic fallback (AI unavailable)'
+    : 'Offline heuristic (demo mode)';
   status.textContent = '';
   result.hidden = false;
-  result.innerHTML = `<strong>${esc(modeLabel)}</strong><br>${esc(r.reasoning || '')}`;
+  result.innerHTML = `<strong>${modeIcon} ${esc(modeLabel)}</strong><br>${esc(r.reasoning || '')}`;
 }
 
 async function fetchSuggestions() {
@@ -1912,7 +1918,7 @@ async function fetchPredict() {
     if (App.mode === 'live') {
       const r = await api(`/api/predict?origin=${encodeURIComponent(origin)}&dest=${encodeURIComponent(dest)}&priority=${selectedPrio}`);
       ph.innerHTML = r.minutes != null
-        ? `<span style="color:var(--info);font-size:11.5px;">📊 Historical avg for this route: <b>${r.minutes} min</b> (${r.samples} sample${r.samples === 1 ? '' : 's'})</span>`
+        ? `<span style="color:var(--info);font-size:11.5px;">${icon('barChart','ic ic-sm')} Historical avg for this route: <b>${r.minutes} min</b> (${r.samples} sample${r.samples === 1 ? '' : 's'})</span>`
         : '';
     }
   } catch (e) { ph.innerHTML = ''; }
@@ -2029,11 +2035,11 @@ function bindUI() {
   $('soundBtn').onclick = () => {
     App.soundOn = !App.soundOn;
     localStorage.setItem('lifeline_sound', App.soundOn ? 'on' : 'off');
-    $('soundBtn').textContent = App.soundOn ? '🔔' : '🔕';
+    $('soundBtn').innerHTML = App.soundOn ? ICONS.bell : ICONS.bellOff;
     $('soundBtn').classList.toggle('on', App.soundOn);
     if (App.soundOn) beep('info');
   };
-  $('soundBtn').textContent = App.soundOn ? '🔔' : '🔕';
+  $('soundBtn').innerHTML = App.soundOn ? ICONS.bell : ICONS.bellOff;
   $('soundBtn').classList.toggle('on', App.soundOn);
   $('kbdBtn').onclick = () => $('helpOverlay').classList.add('show');
   $('helpClose').onclick = () => $('helpOverlay').classList.remove('show');
@@ -2442,9 +2448,9 @@ function updateMap() {
         elapsed / Math.max(1, elapsed + dispEta(cse))));
       const pos = [o[0] + (d[0] - o[0]) * frac, o[1] + (d[1] - o[1]) * frac];
       L.marker(pos, {
-        icon: L.divIcon({ className: '', html: '<div class="amb-dot">🚑</div>',
+        icon: L.divIcon({ className: '', html: `<div class="amb-dot">${ICONS.ambulance}</div>`,
           iconSize: [30, 30], iconAnchor: [15, 15] }),
-      }).bindPopup(`🚑 ${esc(cse.assigned_unit)} · ${esc(cse.id)}<br>Status: ${STATUS[cse.status]} · ETA ${dispEta(cse)} min`)
+      }).bindPopup(`${ICONS.ambulance} ${esc(cse.assigned_unit)} · ${esc(cse.id)}<br>Status: ${STATUS[cse.status]} · ETA ${dispEta(cse)} min`)
         .addTo(layers);
     }
   });
