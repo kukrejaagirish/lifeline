@@ -1,4 +1,4 @@
-/* Life-Line service worker — v3.1
+/* Life-Line service worker — v3.2
  * Static shell: cache-first. Leaflet CDN assets: cache-first (runtime).
  * API + SSE: never cached (network only). */
 const VERSION = 'lifeline-v3.1';

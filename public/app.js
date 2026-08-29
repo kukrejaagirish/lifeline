@@ -1228,7 +1228,7 @@ function renderDash() {
     const congested = active.filter(c => c.traffic === 'Heavy congestion');
     html += headBlock('Traffic Coordination', 'Live congestion & route status per case', false);
     if (congested.length) {
-      html += `<div class="alert-box"><span class="ic">${icon('alertTriangle','ic')}</span><div class="txt"><strong>${congested.length} case(s) flagged</strong> — heavy congestion detected on planned route. Alternative route recommended.</div></div>`;
+      html += `<div class="alert-box">${icon('alertTriangle','ic')}<div class="txt"><strong>${congested.length} case(s) flagged</strong> — heavy congestion detected on planned route. Alternative route recommended.</div></div>`;
     }
     html += statRow(counts, active.length);
     html += cardGrid(active);
