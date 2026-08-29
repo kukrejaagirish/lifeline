@@ -40,7 +40,7 @@ DATA_DIR = os.path.join(ROOT, "data")
 DB_PATH = os.path.join(DATA_DIR, "lifeline.db")
 LEGACY_JSON = os.path.join(DATA_DIR, "state.json")
 
-VERSION = "3.2"
+VERSION = "3.3"
 STATUS_LABELS = ["REGISTERED", "IN TRANSIT", "ARRIVING", "ARRIVED", "CANCELLED"]
 PRIORITIES = ("critical", "urgent", "priority")
 TRAFFIC_LEVELS = ["Clear", "Moderate", "Heavy congestion"]
@@ -102,11 +102,7 @@ PERMS = {
 UNIT_RE = re.compile(r"^[A-Za-z0-9\-]{1,24}$")
 ICU_DEPT_RE = re.compile(r"icu|cardiac|neuro|trauma|obstetric|surgery", re.I)
 TOKEN_TTL_S = 12 * 3600
-PBKDF2_ITERATIONS = int(os.environ.get("LIFELINE_PBKDF2_ITERATIONS", "310000"))
-AUTH_REQUIRED = os.environ.get("LIFELINE_AUTH_REQUIRED", "1").lower() not in ("0", "false", "no", "off")
 ALLOW_PUBLIC_REGISTRATION = os.environ.get("LIFELINE_ALLOW_PUBLIC_REGISTRATION", "0").lower() in ("1", "true", "yes", "on")
-BOOTSTRAP_ADMIN_ID = os.environ.get("LIFELINE_BOOTSTRAP_ADMIN_ID", "").strip()
-BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("LIFELINE_BOOTSTRAP_ADMIN_PASSWORD", "")
 AUDIT_CAP_MEM = 1000
 MAX_BODY = 64 * 1024
 RATE_LIMIT = int(os.environ.get("LIFELINE_RATE_LIMIT", "120"))  # POSTs /min/IP
@@ -656,8 +652,7 @@ CREATE TABLE IF NOT EXISTS incidents(
   id TEXT PRIMARY KEY, name TEXT, location TEXT, opened_ts TEXT,
   closed_ts TEXT);
 CREATE TABLE IF NOT EXISTS users(
-  username TEXT PRIMARY KEY, role TEXT, salt TEXT, pwhash TEXT, created TEXT,
-  iterations INT DEFAULT 310000);
+  username TEXT PRIMARY KEY, role TEXT, created TEXT);
 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
 CREATE INDEX IF NOT EXISTS idx_cases_incident ON cases(incident_id);
 CREATE INDEX IF NOT EXISTS idx_cases_updated ON cases(updated_at);
@@ -691,7 +686,7 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self._migrate_schema()
-        self._ensure_bootstrap_admin()
+        self._ensure_default_admin()
         self.db.commit()
         if fresh and os.path.exists(LEGACY_JSON):
             try:
@@ -703,8 +698,14 @@ class Store:
     # ---------- boot ----------
     def _migrate_schema(self):
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(users)")}
-        if "iterations" not in cols:
-            self.db.execute("ALTER TABLE users ADD COLUMN iterations INT DEFAULT 100000")
+        if {"salt", "pwhash", "iterations"} & cols:
+            self.db.execute("CREATE TABLE users_new(username TEXT PRIMARY KEY, role TEXT, created TEXT)")
+            self.db.execute(
+                "INSERT OR IGNORE INTO users_new(username,role,created) "
+                "SELECT username,role,created FROM users"
+            )
+            self.db.execute("DROP TABLE users")
+            self.db.execute("ALTER TABLE users_new RENAME TO users")
         hcols = {r[1] for r in self.db.execute("PRAGMA table_info(hospitals)")}
         if "source" not in hcols:
             self.db.execute("ALTER TABLE hospitals ADD COLUMN source TEXT DEFAULT 'SIMULATED SEED DATA'")
@@ -713,17 +714,14 @@ class Store:
         if "verified" not in hcols:
             self.db.execute("ALTER TABLE hospitals ADD COLUMN verified INT DEFAULT 0")
 
-    def _ensure_bootstrap_admin(self):
-        if not BOOTSTRAP_ADMIN_ID and not BOOTSTRAP_ADMIN_PASSWORD:
+    def _ensure_default_admin(self):
+        if self.db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
             return
-        if not UNIT_RE.match(BOOTSTRAP_ADMIN_ID) or len(BOOTSTRAP_ADMIN_PASSWORD) < 12:
-            raise RuntimeError("Bootstrap admin requires a valid ID and password of at least 12 characters.")
-        if self.db.execute("SELECT 1 FROM users WHERE username=?", (BOOTSTRAP_ADMIN_ID,)).fetchone():
-            return
-        salt = secrets.token_hex(16)
-        pwhash = hashlib.pbkdf2_hmac("sha256", BOOTSTRAP_ADMIN_PASSWORD.encode(), bytes.fromhex(salt), PBKDF2_ITERATIONS).hex()
-        self.db.execute("INSERT INTO users(username,role,salt,pwhash,created,iterations) VALUES(?,?,?,?,?,?)", (BOOTSTRAP_ADMIN_ID, "admin", salt, pwhash, iso(now()), PBKDF2_ITERATIONS))
-        print(f"[auth] bootstrap admin created: {BOOTSTRAP_ADMIN_ID}", flush=True)
+        self.db.execute(
+            "INSERT OR IGNORE INTO users(username,role,created) VALUES(?,?,?)",
+            ("ADMIN-001", "admin", iso(now()))
+        )
+        print("[auth] default admin registered: ADMIN-001", flush=True)
 
     def _load_or_seed(self):
         n = self.db.execute("SELECT COUNT(*) c FROM hospitals").fetchone()["c"]
@@ -911,49 +909,33 @@ class Store:
         return f"{base} {actor['unit']}".strip() if actor.get("unit") else base
 
     # ---------- auth ----------
-    def login(self, role, unit, password=None):
+    def login(self, role, unit):
         if role not in ROLES:
             raise ValueError("Unknown role.")
         unit = (unit or "").strip()
-        if AUTH_REQUIRED and not UNIT_RE.match(unit):
-            raise ValueError("Operator ID is required and must contain only letters, digits and dashes.")
-        if not AUTH_REQUIRED and unit and not UNIT_RE.match(unit):
-            raise ValueError("Invalid operator ID (letters, digits and dashes only).")
-        if AUTH_REQUIRED:
-            if not password:
-                raise ValueError("Password is required.")
-            row = self.db.execute("SELECT * FROM users WHERE username=?", (unit,)).fetchone()
-            if not row or row["role"] != role or not self._verify_pw(password, row["salt"], row["pwhash"], row["iterations"] or 100000):
-                raise ValueError("Invalid credentials.")
-        elif password:
-            row = self.db.execute("SELECT * FROM users WHERE username=?", (unit,)).fetchone()
-            if not row or row["role"] != role or not self._verify_pw(password, row["salt"], row["pwhash"], row["iterations"] or 100000):
-                raise ValueError("Invalid credentials.")
+        if unit and not UNIT_RE.match(unit):
+            raise ValueError("Operator ID may contain only letters, digits and dashes.")
+        if role == "responder" and not unit:
+            raise ValueError("Responder unit ID is required.")
         token = secrets.token_urlsafe(32)
         self.tokens[token] = {"role": role, "unit": unit, "exp": time.time() + TOKEN_TTL_S}
         return token
 
-    def register_user(self, role, unit, password, actor=None):
-        if not ALLOW_PUBLIC_REGISTRATION and (not actor or actor.get("role") != "admin"):
+    def register_user(self, role, unit, actor=None):
+        if not actor or actor.get("role") != "admin":
             raise PermissionError("Only an authenticated admin can create users.")
         if role not in ROLES:
             raise ValueError("Unknown role.")
         unit = (unit or "").strip()
         if not UNIT_RE.match(unit):
             raise ValueError("Invalid operator ID.")
-        if not password or len(password) < 12:
-            raise ValueError("Password must be at least 12 characters.")
         if self.db.execute("SELECT 1 FROM users WHERE username=?", (unit,)).fetchone():
             raise ValueError("That operator ID is already registered.")
-        salt = secrets.token_hex(16)
-        pwhash = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), PBKDF2_ITERATIONS).hex()
-        self.db.execute("INSERT INTO users(username,role,salt,pwhash,created,iterations) VALUES(?,?,?,?,?,?)", (unit, role, salt, pwhash, iso(now()), PBKDF2_ITERATIONS))
+        self.db.execute(
+            "INSERT INTO users(username,role,created) VALUES(?,?,?)",
+            (unit, role, iso(now()))
+        )
         self.db.commit()
-
-    @staticmethod
-    def _verify_pw(password, salt_hex, pwhash_hex, iterations=PBKDF2_ITERATIONS):
-        calc = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_hex), int(iterations)).hex()
-        return secrets.compare_digest(calc, pwhash_hex)
 
     def logout(self, token):
         self.tokens.pop(token, None)
@@ -1758,7 +1740,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True, "service": "life-line", "version": VERSION,
                     "region": STORE.region, "rev": STORE.rev,
                     "notify_mode": NOTIFY_MODE, "triage_mode": TRIAGE_MODE,
-                    "auth_required": AUTH_REQUIRED, "public_registration": ALLOW_PUBLIC_REGISTRATION,
+                    "auth_required": True, "public_registration": False,
                     "uptime_s": int(time.time() - STORE.t0),
                     "server_time": iso(now()), "roles": ROLES})
             if path == "/api/events":
@@ -1863,8 +1845,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/login":
                 data = self._body()
                 with STORE.lock:
-                    token = STORE.login(data.get("role"), data.get("unit"),
-                                        data.get("password"))
+                    token = STORE.login(data.get("role"), data.get("unit"))
                 return self._json(200, {
                     "token": token, "role": data.get("role"),
                     "unit": (data.get("unit") or "").strip(),
@@ -1877,7 +1858,7 @@ class Handler(BaseHTTPRequestHandler):
                         return
                 data = self._body()
                 with STORE.lock:
-                    STORE.register_user(data.get("role"), data.get("unit"), data.get("password"), actor)
+                    STORE.register_user(data.get("role"), data.get("unit"), actor)
                 return self._json(201, {"ok": True})
             if path == "/api/logout":
                 with STORE.lock:
@@ -2108,7 +2089,7 @@ def main():
                 os.remove(f)
         print("[store] --fresh: removed database", flush=True)
 
-    if AUTH_REQUIRED and args.host not in ("127.0.0.1", "localhost", "::1") and not (args.certfile and args.keyfile):
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not (args.certfile and args.keyfile):
         print("[security] WARNING: network bind without TLS; use --certfile/--keyfile.", flush=True)
     STORE = Store(DB_PATH, args.region)
     STORE.t0 = time.time()

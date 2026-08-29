@@ -388,7 +388,7 @@ function showLoginError(msg) {
     : `${icon('wifiOff','ic ic-sm ic-urgent')} Offline demo mode · mock data · syncs across tabs of this browser only`;
 }
 
-async function enterApp(role, unit, password) {
+async function enterApp(role, unit) {
   const le = $('loginError');
   if (le) le.hidden = true;
   App.role = role; App.unit = (unit || '').trim();
@@ -402,7 +402,7 @@ async function enterApp(role, unit, password) {
   if (App.mode === 'live') {
     try {
       const res = await api('/api/login', {
-        method: 'POST', body: JSON.stringify({ role, unit: App.unit, password: password || undefined }),
+        method: 'POST', body: JSON.stringify({ role, unit: App.unit }),
       });
       App.token = res.token;
       sessionStorage.setItem('ll_token', App.token);
@@ -450,7 +450,6 @@ function doLogout() {
   $('appRoot').style.display = 'none';
   $('loginScreen').classList.remove('hide');
   $('loginIdInput').value = '';
-  if ($('loginPasswordInput')) $('loginPasswordInput').value = '';
   $('loginIdInput').focus();
 }
 
@@ -2055,10 +2054,10 @@ function drawPulse() {
 /* ================= event wiring ================= */
 function bindUI() {
   // login
-  $('loginResponder').onclick = () => enterApp('responder', $('loginIdInput').value, $('loginPasswordInput').value);
-  $('loginCommand').onclick = () => enterApp('command', $('loginIdInput').value, $('loginPasswordInput').value);
+  $('loginResponder').onclick = () => enterApp('responder', $('loginIdInput').value);
+  $('loginCommand').onclick = () => enterApp('command', $('loginIdInput').value);
   document.querySelectorAll('.login-mini[data-role]').forEach(b => {
-    b.onclick = () => enterApp(b.dataset.role, $('loginIdInput').value, $('loginPasswordInput').value);
+    b.onclick = () => enterApp(b.dataset.role, $('loginIdInput').value);
   });
   $('logoutBtn').onclick = doLogout;
 

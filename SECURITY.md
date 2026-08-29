@@ -9,10 +9,9 @@
 
 ## Default security posture
 
-- Authentication is enabled by default (`LIFELINE_AUTH_REQUIRED=1`).
+- Authentication uses short-lived server-side sessions tied to the operator ID and role.
 - Public user registration is disabled by default.
-- Admin accounts are created through the one-time bootstrap environment variables.
-- Passwords are salted and hashed with PBKDF2-HMAC-SHA256.
+- A default `ADMIN-001` admin identity is provisioned for demo/bootstrap use; production deployments should use an external identity provider.
 - Session tokens are random, short-lived, and held server-side.
 - State-changing POST requests are rate limited.
 - API and static responses include defensive security headers.

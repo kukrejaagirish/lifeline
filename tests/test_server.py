@@ -46,9 +46,7 @@ class LiveServer:
     down afterwards. Isolated = your real data/lifeline.db is never
     touched, no matter what the tests do to it."""
 
-    def __init__(self, rate_limit=None, auth_required=False, bootstrap=None):
-        self.auth_required = auth_required
-        self.bootstrap = bootstrap
+    def __init__(self, rate_limit=None):
         self.tmpdir = tempfile.mkdtemp(prefix="lifeline-test-")
         shutil.copy2(SERVER_SRC, os.path.join(self.tmpdir, "server.py"))
         shutil.copytree(PUBLIC_SRC, os.path.join(self.tmpdir, "public"))
@@ -57,10 +55,6 @@ class LiveServer:
         env = dict(os.environ)
         if rate_limit is not None:
             env["LIFELINE_RATE_LIMIT"] = str(rate_limit)
-        env["LIFELINE_AUTH_REQUIRED"] = "1" if auth_required else "0"
-        if bootstrap:
-            env["LIFELINE_BOOTSTRAP_ADMIN_ID"] = bootstrap[0]
-            env["LIFELINE_BOOTSTRAP_ADMIN_PASSWORD"] = bootstrap[1]
         self.proc = subprocess.Popen(
             [sys.executable, "server.py", "--port", str(self.port),
              "--fresh", "--no-sim"],
@@ -111,10 +105,6 @@ class LiveServer:
         self.port = free_port()
         self.base = f"http://127.0.0.1:{self.port}"
         env = dict(os.environ)
-        env["LIFELINE_AUTH_REQUIRED"] = "1" if self.auth_required else "0"
-        if self.bootstrap:
-            env["LIFELINE_BOOTSTRAP_ADMIN_ID"] = self.bootstrap[0]
-            env["LIFELINE_BOOTSTRAP_ADMIN_PASSWORD"] = self.bootstrap[1]
         self.proc = subprocess.Popen(
             [sys.executable, "server.py", "--port", str(self.port),
              "--no-sim"],
@@ -152,10 +142,8 @@ class LiveServer:
     def post(self, path, token=None, body=None):
         return self.request("POST", path, token=token, body=body or {})
 
-    def login(self, role, unit="", password=None):
+    def login(self, role, unit=""):
         body = {"role": role, "unit": unit}
-        if password is not None:
-            body["password"] = password
         status, data = self.post("/api/login", body=body)
         assert status == 200, f"login failed: {status} {data}"
         return data["token"]
@@ -432,33 +420,39 @@ class RestartPersistenceTests(unittest.TestCase):
             srv.stop()
 
 
-class SecureAuthTests(unittest.TestCase):
+class CredentialFreeAuthTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.srv = LiveServer(auth_required=True, bootstrap=("ADMIN-001", "Correct-Horse-Battery-9"))
+        cls.srv = LiveServer()
 
     @classmethod
     def tearDownClass(cls):
         cls.srv.stop()
 
-    def test_password_required(self):
-        status, _ = self.srv.post("/api/login", body={"role": "admin", "unit": "ADMIN-001"})
-        self.assertEqual(status, 400)
-
-    def test_bootstrap_admin_login(self):
-        status, data = self.srv.post("/api/login", body={"role": "admin", "unit": "ADMIN-001", "password": "Correct-Horse-Battery-9"})
+    def test_operator_id_login_without_credential(self):
+        status, data = self.srv.post("/api/login", body={"role": "admin", "unit": "ADMIN-001"})
         self.assertEqual(status, 200)
         self.assertTrue(data.get("token"))
 
-    def test_public_admin_registration_blocked(self):
-        status, _ = self.srv.post("/api/users/register", body={"role": "admin", "unit": "EVIL-001", "password": "Correct-Horse-Battery-9"})
+    def test_missing_operator_id_rejected(self):
+        status, _ = self.srv.post("/api/login", body={"role": "responder", "unit": ""})
+        self.assertEqual(status, 400)
+
+    def test_unexpected_credential_field_is_ignored(self):
+        status, data = self.srv.post("/api/login", body={"role": "admin", "unit": "ADMIN-001", "credential": "ignored"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data.get("token"))
+
+    def test_public_user_registration_blocked(self):
+        status, _ = self.srv.post("/api/users/register", body={"role": "responder", "unit": "AMB-9000"})
         self.assertIn(status, (401, 403))
 
-    def test_admin_can_register_user(self):
-        token = self.srv.login("admin", "ADMIN-001", "Correct-Horse-Battery-9")
-        status, _ = self.srv.post("/api/users/register", token=token, body={"role": "responder", "unit": "AMB-9000", "password": "Responder-Password-9"})
+    def test_admin_can_register_user_without_credential(self):
+        token = self.srv.login("admin", "ADMIN-001")
+        status, _ = self.srv.post("/api/users/register", token=token,
+                                   body={"role": "responder", "unit": "AMB-9000"})
         self.assertEqual(status, 201)
-        status, data = self.srv.post("/api/login", body={"role": "responder", "unit": "AMB-9000", "password": "Responder-Password-9"})
+        status, data = self.srv.post("/api/login", body={"role": "responder", "unit": "AMB-9000"})
         self.assertEqual(status, 200)
         self.assertTrue(data.get("token"))
 

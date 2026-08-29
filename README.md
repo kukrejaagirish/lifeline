@@ -66,7 +66,7 @@ auto-escalates stale cases and flags delayed transfers, a notification log
 (SMS/WhatsApp — simulated unless Twilio is configured), destination
 recommendation and ETA prediction, AI triage and situation-report endpoints,
 mass-casualty incident tracking, a handover proof-of-delivery checklist,
-equipment tags, optional password accounts (PBKDF2), optional TLS, rate
+equipment tags, operator-ID sessions, optional TLS, rate
 limiting, and CSV report export.
 
 Frontend (`public/`): the AI triage box (typed or spoken notes → suggested
