@@ -1,0 +1,28 @@
+{
+  "name": "Life-Line — Emergency Transfer Coordination",
+  "short_name": "Life-Line",
+  "description": "Coordinate emergency patient transfers between hospitals: live beds, ambulances, MCI mode and handover proof-of-delivery.",
+  "id": "/index.html",
+  "start_url": "/index.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b1220",
+  "theme_color": "#0ea5e9",
+  "lang": "en",
+  "categories": ["medical", "productivity"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
