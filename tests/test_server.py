@@ -46,7 +46,9 @@ class LiveServer:
     down afterwards. Isolated = your real data/lifeline.db is never
     touched, no matter what the tests do to it."""
 
-    def __init__(self, rate_limit=None):
+    def __init__(self, rate_limit=None, auth_required=False, bootstrap=None):
+        self.auth_required = auth_required
+        self.bootstrap = bootstrap
         self.tmpdir = tempfile.mkdtemp(prefix="lifeline-test-")
         shutil.copy2(SERVER_SRC, os.path.join(self.tmpdir, "server.py"))
         shutil.copytree(PUBLIC_SRC, os.path.join(self.tmpdir, "public"))
@@ -55,6 +57,10 @@ class LiveServer:
         env = dict(os.environ)
         if rate_limit is not None:
             env["LIFELINE_RATE_LIMIT"] = str(rate_limit)
+        env["LIFELINE_AUTH_REQUIRED"] = "1" if auth_required else "0"
+        if bootstrap:
+            env["LIFELINE_BOOTSTRAP_ADMIN_ID"] = bootstrap[0]
+            env["LIFELINE_BOOTSTRAP_ADMIN_PASSWORD"] = bootstrap[1]
         self.proc = subprocess.Popen(
             [sys.executable, "server.py", "--port", str(self.port),
              "--fresh", "--no-sim"],
@@ -104,10 +110,15 @@ class LiveServer:
             self.proc.stdout.close()
         self.port = free_port()
         self.base = f"http://127.0.0.1:{self.port}"
+        env = dict(os.environ)
+        env["LIFELINE_AUTH_REQUIRED"] = "1" if self.auth_required else "0"
+        if self.bootstrap:
+            env["LIFELINE_BOOTSTRAP_ADMIN_ID"] = self.bootstrap[0]
+            env["LIFELINE_BOOTSTRAP_ADMIN_PASSWORD"] = self.bootstrap[1]
         self.proc = subprocess.Popen(
             [sys.executable, "server.py", "--port", str(self.port),
              "--no-sim"],
-            cwd=self.tmpdir, env=dict(os.environ),
+            cwd=self.tmpdir, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True)
         self._wait_ready()
@@ -141,9 +152,11 @@ class LiveServer:
     def post(self, path, token=None, body=None):
         return self.request("POST", path, token=token, body=body or {})
 
-    def login(self, role, unit=""):
-        status, data = self.post("/api/login",
-                                 body={"role": role, "unit": unit})
+    def login(self, role, unit="", password=None):
+        body = {"role": role, "unit": unit}
+        if password is not None:
+            body["password"] = password
+        status, data = self.post("/api/login", body=body)
         assert status == 200, f"login failed: {status} {data}"
         return data["token"]
 
@@ -282,6 +295,46 @@ class LifeLineAPITests(unittest.TestCase):
                                      token=self.command_token)
         self.assertEqual(status, 400)
 
+    def test_command_can_dispatch_available_ambulance(self):
+        status, data = self.srv.post(
+            "/api/cases", token=self.command_token,
+            body={"priority": "critical", "origin": "KEM Hospital",
+                  "dest": "Bombay Hospital", "dept": "Cardiac ICU",
+                  "eta": 18, "age": 61, "reason": "dispatch test"})
+        self.assertEqual(status, 200)
+        cid = data["case"]["id"]
+
+        status, _ = self.srv.post(
+            f"/api/cases/{cid}/dispatch", token=self.command_token,
+            body={"unit": "AMB-1025"})
+        self.assertEqual(status, 200)
+
+        status, snap = self.srv.get("/api/state", token=self.command_token)
+        self.assertEqual(status, 200)
+        case = next(c for c in snap["cases"] if c["id"] == cid)
+        unit = next(u for u in snap["units"] if u["id"] == "AMB-1025")
+        self.assertEqual(case["assigned_unit"], "AMB-1025")
+        self.assertEqual(case["amb"], "AMB-1025")
+        self.assertEqual(unit["status"], "en-route")
+        self.assertEqual(unit["case"], cid)
+
+        status, _ = self.srv.post(
+            f"/api/cases/{cid}/dispatch", token=self.command_token,
+            body={"unit": "AMB-1026"})
+        self.assertEqual(status, 400)
+
+    def test_responder_cannot_dispatch(self):
+        status, data = self.srv.post(
+            "/api/cases", token=self.command_token,
+            body={"priority": "urgent", "origin": "KEM Hospital",
+                  "dest": "Bombay Hospital", "eta": 20})
+        self.assertEqual(status, 200)
+        cid = data["case"]["id"]
+        status, _ = self.srv.post(
+            f"/api/cases/{cid}/dispatch", token=self.responder_token,
+            body={"unit": "AMB-1025"})
+        self.assertEqual(status, 403)
+
     def test_cancel_case(self):
         status, data = self.srv.post(
             "/api/cases", token=self.command_token,
@@ -377,6 +430,41 @@ class RestartPersistenceTests(unittest.TestCase):
             self.assertEqual(reloaded["age"], 62)
         finally:
             srv.stop()
+
+
+class SecureAuthTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = LiveServer(auth_required=True, bootstrap=("ADMIN-001", "Correct-Horse-Battery-9"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.stop()
+
+    def test_password_required(self):
+        status, _ = self.srv.post("/api/login", body={"role": "admin", "unit": "ADMIN-001"})
+        self.assertEqual(status, 400)
+
+    def test_bootstrap_admin_login(self):
+        status, data = self.srv.post("/api/login", body={"role": "admin", "unit": "ADMIN-001", "password": "Correct-Horse-Battery-9"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data.get("token"))
+
+    def test_public_admin_registration_blocked(self):
+        status, _ = self.srv.post("/api/users/register", body={"role": "admin", "unit": "EVIL-001", "password": "Correct-Horse-Battery-9"})
+        self.assertIn(status, (401, 403))
+
+    def test_admin_can_register_user(self):
+        token = self.srv.login("admin", "ADMIN-001", "Correct-Horse-Battery-9")
+        status, _ = self.srv.post("/api/users/register", token=token, body={"role": "responder", "unit": "AMB-9000", "password": "Responder-Password-9"})
+        self.assertEqual(status, 201)
+        status, data = self.srv.post("/api/login", body={"role": "responder", "unit": "AMB-9000", "password": "Responder-Password-9"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data.get("token"))
+
+    def test_hospitals_require_auth(self):
+        status, _ = self.srv.get("/api/hospitals")
+        self.assertEqual(status, 401)
 
 
 if __name__ == "__main__":

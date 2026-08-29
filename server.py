@@ -40,7 +40,7 @@ DATA_DIR = os.path.join(ROOT, "data")
 DB_PATH = os.path.join(DATA_DIR, "lifeline.db")
 LEGACY_JSON = os.path.join(DATA_DIR, "state.json")
 
-VERSION = "3.1"
+VERSION = "3.2"
 STATUS_LABELS = ["REGISTERED", "IN TRANSIT", "ARRIVING", "ARRIVED", "CANCELLED"]
 PRIORITIES = ("critical", "urgent", "priority")
 TRAFFIC_LEVELS = ["Clear", "Moderate", "Heavy congestion"]
@@ -1046,6 +1046,8 @@ class Store:
         dest = self.find_hospital(case["dest"])
         dest_target = "+910000000000"  # demo stand-in for hospital desk line
         cmd_body = {
+            "DISPATCHED": f"DISPATCH: {case['id']} — {case.get('assigned_unit') or case.get('amb') or 'ambulance'} "
+                          f"to {case['origin']} → {case['dest']} ({case['priority'].upper()})",
             "REGISTERED": f"NEW {case['priority'].upper()} transfer {case['id']}: "
                           f"{case['origin']} → {case['dest']} ({case['dept']})",
             "STATUS": f"{case['id']} now {STATUS_LABELS[case['status']]}, "
@@ -1064,7 +1066,7 @@ class Store:
                                    cmd_body, case["id"])          # police ctrl
             self.push_notification("whatsapp", "+910000000002",
                                    cmd_body, case["id"])          # traffic ctrl
-        elif event in ("DELAYED", "CANCELLED", "ESCALATED", "SLA"):
+        elif event in ("DISPATCHED", "DELAYED", "CANCELLED", "ESCALATED", "SLA"):
             self.push_notification("radio", "CMD", cmd_body, case["id"])
             self.push_notification("sms", dest_target, cmd_body, case["id"])
         elif event == "ARRIVED":
@@ -1210,6 +1212,34 @@ class Store:
         self.save_unit(u)
         self.save_case(c)
         self.audit_add(cid, f"Run claimed by {u['id']}")
+
+    def dispatch(self, cid, unit_id, label):
+        """Dispatch an available ambulance to a case from Command Center."""
+        c = self.find_case(cid)
+        if not c:
+            raise ValueError("Case not found.")
+        if c["status"] >= 3:
+            raise ValueError("Case is closed.")
+        if c.get("assigned_unit"):
+            raise ValueError(f"Already assigned to {c['assigned_unit']}.")
+        unit_id = (unit_id or "").strip()
+        if not unit_id:
+            raise ValueError("Select an ambulance to dispatch.")
+        u = self._find_unit(unit_id)
+        if not u:
+            known = ", ".join(x["id"] for x in self.units) or "none registered"
+            raise ValueError(f"Unknown unit '{unit_id}'. Known units: {known}")
+        if u["status"] != "available" or u.get("case"):
+            raise ValueError(f"{u['id']} is not available for dispatch.")
+        u["status"] = "en-route"
+        u["case"] = cid
+        c["assigned_unit"] = u["id"]
+        c["amb"] = u["id"]
+        c["updated_at"] = now()
+        self.save_unit(u)
+        self.save_case(c)
+        self.audit_add(cid, f"AMBULANCE DISPATCHED: {u['id']} by {label}")
+        self.notify_event("DISPATCHED", c)
 
     def assign(self, cid, unit_id, label):
         c = self.find_case(cid)
@@ -1647,7 +1677,7 @@ CONTENT_TYPES = {
 }
 
 CASE_ACTION_RE = re.compile(
-    r"^/api/cases/([A-Za-z0-9\-]+)/(status|claim|assign|traffic|notes|cancel"
+    r"^/api/cases/([A-Za-z0-9\-]+)/(status|claim|assign|dispatch|traffic|notes|cancel"
     r"|escalate|handover)$")
 
 
@@ -1903,7 +1933,7 @@ class Handler(BaseHTTPRequestHandler):
             cid, action = m.group(1), m.group(2)
             perm_map = {
                 "status": "case_advance", "claim": "case_claim",
-                "assign": "case_assign", "traffic": "case_flag_traffic",
+                "assign": "case_assign", "dispatch": "case_assign", "traffic": "case_flag_traffic",
                 "cancel": "case_cancel", "escalate": "case_escalate",
                 "notes": "note_add", "handover": "case_advance",
             }
@@ -1911,7 +1941,7 @@ class Handler(BaseHTTPRequestHandler):
             if not actor:
                 return
             data = self._body() if action in (
-                "assign", "notes", "cancel", "handover") else {}
+                "assign", "dispatch", "notes", "cancel", "handover") else {}
             label = STORE.actor_label(actor)
 
             if action == "status":
@@ -1923,6 +1953,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._mutate_and_broadcast(
                     lambda: STORE.assign(cid, (data.get("unit") or "").strip(),
                                          label))
+            if action == "dispatch":
+                return self._mutate_and_broadcast(
+                    lambda: STORE.dispatch(cid, (data.get("unit") or "").strip(),
+                                           label))
             if action == "traffic":
                 return self._mutate_and_broadcast(
                     lambda: STORE.flag_traffic(cid, label))

@@ -266,7 +266,7 @@ const SEED_CASES = [
 /* ================= app state ================= */
 const LS_KEY = 'lifeline_offline_state_v2';
 const App = {
-  mode: 'boot', token: null, role: null, unit: '',
+  mode: 'boot', token: null, role: null, unit: '', authRequired: true,
   state: null, receivedAt: 0,
   es: null, esUp: false, esFails: 0,
   seenCritical: new Set(), seenDelayed: new Set(), firstSnap: true,
@@ -330,16 +330,12 @@ async function api(path, opts, retry) {
   const res = await fetch(path, Object.assign({}, opts, { headers }));
   let data = {};
   try { data = await res.json(); } catch (e) { }
-  if (res.status === 401 && retry && App.role && App.mode === 'live') {
-    const r = await fetch('/api/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: App.role, unit: App.unit }),
-    });
-    if (r.ok) {
-      App.token = (await r.json()).token;
-      sessionStorage.setItem('ll_token', App.token);
-      return api(path, opts, false);
-    }
+  if (res.status === 401 && retry && App.mode === 'live') {
+    App.token = null;
+    sessionStorage.removeItem('ll_token');
+    sessionStorage.removeItem('ll_role');
+    sessionStorage.removeItem('ll_unit');
+    if ($('loginScreen')) $('loginScreen').classList.remove('hide');
   }
   if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
   return data;
@@ -360,6 +356,10 @@ async function boot() {
     const tm = setTimeout(() => ctl.abort(), 1500);
     const r = await fetch('/api/health', { signal: ctl.signal });
     clearTimeout(tm);
+    if (r.ok) {
+      const health = await r.json();
+      App.authRequired = health.auth_required !== false;
+    }
     live = r.ok;
   } catch (e) { live = false; }
   App.mode = live ? 'live' : 'offline';
@@ -388,7 +388,7 @@ function showLoginError(msg) {
     : `${icon('wifiOff','ic ic-sm ic-urgent')} Offline demo mode · mock data · syncs across tabs of this browser only`;
 }
 
-async function enterApp(role, unit) {
+async function enterApp(role, unit, password) {
   const le = $('loginError');
   if (le) le.hidden = true;
   App.role = role; App.unit = (unit || '').trim();
@@ -402,7 +402,7 @@ async function enterApp(role, unit) {
   if (App.mode === 'live') {
     try {
       const res = await api('/api/login', {
-        method: 'POST', body: JSON.stringify({ role, unit: App.unit }),
+        method: 'POST', body: JSON.stringify({ role, unit: App.unit, password: password || undefined }),
       });
       App.token = res.token;
       sessionStorage.setItem('ll_token', App.token);
@@ -450,6 +450,7 @@ function doLogout() {
   $('appRoot').style.display = 'none';
   $('loginScreen').classList.remove('hide');
   $('loginIdInput').value = '';
+  if ($('loginPasswordInput')) $('loginPasswordInput').value = '';
   $('loginIdInput').focus();
 }
 
@@ -477,20 +478,7 @@ function connectSSE() {
 }
 
 async function reconnectSSE() {
-  // A closed stream after a server restart means our in-memory token died
-  // with the old process. If the server answers /api/health, re-authenticate
-  // before reconnecting; otherwise just retry (server may come back).
   if (App.mode !== 'live' || !App.role || !App.token) return;
-  try {
-    const h = await fetch('/api/health', { signal: AbortSignal.timeout ? AbortSignal.timeout(2500) : undefined });
-    if (h.ok) {
-      const res = await api('/api/login', {
-        method: 'POST', body: JSON.stringify({ role: App.role, unit: App.unit }),
-      });
-      App.token = res.token;
-      sessionStorage.setItem('ll_token', App.token);
-    }
-  } catch (e) { /* unreachable or auth failed — plain retry next round */ }
   connectSSE();
 }
 
@@ -779,6 +767,36 @@ function doAssign(id, unit) {
     if (!c.amb) c.amb = u.id;
     offAudit(id, `Assigned to ${u.id} by ${actorLabel()}`);
     toast('Unit assigned', `${unit} → ${id}`, 'ok');
+    afterMutation();
+  }
+}
+
+function doDispatch(id, unit) {
+  unit = (unit || '').trim();
+  if (!unit) {
+    toast('Select an ambulance', 'Choose an available unit before dispatching.', 'info');
+    return;
+  }
+  if (App.mode === 'live') {
+    api(`/api/cases/${id}/dispatch`, { method: 'POST', body: JSON.stringify({ unit }) })
+      .then(() => { toast('Ambulance dispatched', `${unit} → ${id}`, 'ok'); return refresh(); })
+      .catch(e => toast('Dispatch failed', e.message, 'info'));
+  } else {
+    const c = App.state.cases.find(x => x.id === id);
+    const u = App.state.units.find(x => x.id === unit);
+    if (!c || !u) return;
+    if (c.assigned_unit) { toast('Already assigned', `${id} is already assigned to ${c.assigned_unit}.`, 'info'); return; }
+    if (u.status !== 'available' || u.case) { toast('Unit unavailable', `${u.id} is not available.`, 'info'); return; }
+    u.status = 'en-route'; u.case = id; c.assigned_unit = u.id; c.amb = u.id;
+    c.updated_at = new Date().toISOString();
+    offAudit(id, `AMBULANCE DISPATCHED: ${u.id} by ${actorLabel()}`);
+    App.state.notifications = App.state.notifications || [];
+    App.state.notifications.unshift({
+      ts: new Date().toISOString(), channel: 'radio', target: 'CMD',
+      body: `DISPATCH: ${id} — ${u.id} to ${c.origin} → ${c.dest} (${c.priority.toUpperCase()})`,
+      caseId: id, status: 'simulated'
+    });
+    toast('Ambulance dispatched', `${u.id} → ${id}`, 'ok');
     afterMutation();
   }
 }
@@ -1366,14 +1384,26 @@ function buildDetail(c, events, notes, units, editable) {
     btns.push(`<button class="btn small danger" type="button" data-act="cancel" data-id="${c.id}">${icon('close','ic ic-sm')} ${t('cancel_case')}</button>`);
   }
 
-  const assignSel = canDo('assign') && editable ? `
-    <div class="field" style="margin-top:14px;">
-      <label>Assign unit</label>
-      <select id="assignSel" data-id="${c.id}">
-        <option value="">— select unit —</option>
-        ${units.map(u => `<option value="${esc(u.id)}"${u.case === c.id ? ' selected' : ''}>${esc(u.id)} · ${u.status}${u.case && u.case !== c.id ? ' (on ' + esc(u.case) + ')' : ''}</option>`).join('')}
-      </select>
+  const availableUnits = units.filter(u => u.status === 'available' && !u.case);
+  const dispatchSel = canDo('assign') && editable && !c.assigned_unit ? `
+    <div class="analytics-panel" style="margin-top:16px;border:1px solid var(--critical);">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--critical);font-weight:700;margin-bottom:8px;">
+        🚑 Dispatch Ambulance
+      </div>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:10px;">
+        ${availableUnits.length ? `${availableUnits.length} ambulance(s) available` : 'No ambulances currently available'}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="dispatchSel" data-id="${c.id}" ${availableUnits.length ? '' : 'disabled'}>
+          <option value="">— select available unit —</option>
+          ${availableUnits.map((u, i) => `<option value="${esc(u.id)}">${esc(u.id)} · AVAILABLE${i === 0 ? ' · RECOMMENDED' : ''}</option>`).join('')}
+        </select>
+        <button class="btn small danger" type="button" data-act="dispatch" data-id="${c.id}" ${availableUnits.length ? '' : 'disabled'}>
+          🚑 Dispatch ambulance
+        </button>
+      </div>
     </div>` : '';
+
 
   const notesHTML = notes.length
     ? notes.slice().reverse().map(n => `
@@ -1403,7 +1433,7 @@ function buildDetail(c, events, notes, units, editable) {
       ${timelineHTML(c)}
       ${handoverHTML(c)}
       ${btns.length ? `<div class="action-btns" style="margin-top:16px;">${btns.join('')}</div>` : ''}
-      ${assignSel}
+      ${dispatchSel}
       <div class="notes-block">
         <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--dim);margin-bottom:8px;">Coordination notes</div>
         ${notesHTML}
@@ -1949,6 +1979,7 @@ function renderHospitals() {
         <div class="hosp-name">${esc(h.name)}</div>
         <div class="hosp-area">${esc(h.area)} · ${esc(h.region)}</div>
         <div class="hosp-beds"><span class="${h.icuBeds <= 1 ? 'crit' : ''}">ICU ${h.icuBeds}</span> · <span>Gen ${h.genBeds}</span></div>
+        <div class="hosp-area">${h.verified ? '✓ Verified' : '⚠ Simulated / unverified'} · ${esc(h.source || 'Unknown source')}</div>
       </div>
       <span class="hosp-tag ${esc(h.type)}">${esc(h.type)}</span>
     </div>`).join('') : '<div class="empty">No hospitals match that search.</div>';
@@ -2024,10 +2055,10 @@ function drawPulse() {
 /* ================= event wiring ================= */
 function bindUI() {
   // login
-  $('loginResponder').onclick = () => enterApp('responder', $('loginIdInput').value);
-  $('loginCommand').onclick = () => enterApp('command', $('loginIdInput').value);
+  $('loginResponder').onclick = () => enterApp('responder', $('loginIdInput').value, $('loginPasswordInput').value);
+  $('loginCommand').onclick = () => enterApp('command', $('loginIdInput').value, $('loginPasswordInput').value);
   document.querySelectorAll('.login-mini[data-role]').forEach(b => {
-    b.onclick = () => enterApp(b.dataset.role, $('loginIdInput').value);
+    b.onclick = () => enterApp(b.dataset.role, $('loginIdInput').value, $('loginPasswordInput').value);
   });
   $('logoutBtn').onclick = doLogout;
 
@@ -2147,6 +2178,9 @@ function bindUI() {
       doAdvance(id);
     } else if (act.dataset.act === 'claim') {
       doClaim(id);
+    } else if (act.dataset.act === 'dispatch') {
+      const sel = $('dispatchSel');
+      doDispatch(id, sel ? sel.value : '');
     } else if (act.dataset.act === 'flag') {
       doFlag(id);
     } else if (act.dataset.act === 'escalate') {
@@ -2166,8 +2200,8 @@ function bindUI() {
       doHandover(e.target.dataset.id, e.target.dataset.item, e.target.checked);
       return;
     }
-    if (e.target && e.target.id === 'assignSel' && e.target.value) {
-      doAssign(e.target.dataset.id, e.target.value);
+    if (e.target && e.target.id === 'dispatchSel' && e.target.value) {
+      e.target.dataset.selected = e.target.value;
     }
   });
 
@@ -2181,6 +2215,7 @@ function bindUI() {
       if (act.dataset.act === 'detail') openDetail(id);
       else if (act.dataset.act === 'advance') doAdvance(id);
       else if (act.dataset.act === 'claim') doClaim(id);
+      else if (act.dataset.act === 'dispatch') { const sel = $('dispatchSel'); doDispatch(id, sel ? sel.value : ''); }
       else if (act.dataset.act === 'flag') doFlag(id);
       else if (act.dataset.act === 'inc-declare') doDeclareIncident();
       else if (act.dataset.act === 'inc-close') doCloseIncident(id);

@@ -144,6 +144,13 @@ Twilio is configured (the notification log always shows the true delivery
 status). Verify emergency numbers independently.
 
 
+
+## Command Center Dispatch
+
+Command Center operators can dispatch an available ambulance directly from an active case. The dispatch workflow validates that the selected unit exists and is available, assigns it to the case, marks it en route, records an audit event, broadcasts the updated state to connected clients, and emits the configured dispatch notification. Responders then see the assigned run in their queue and can advance its status.
+
+Dispatch is intentionally separate from responder self-claiming: **Command Center dispatches; Responders claim only unassigned runs**.
+
 ## Security / authentication
 
 Secure authentication is enabled by default. See `.env.example` and `SECURITY.md`.
