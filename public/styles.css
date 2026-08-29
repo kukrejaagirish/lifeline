@@ -402,6 +402,7 @@ tr.row-cancelled td{opacity:0.45;text-decoration:line-through;}
   display:flex;align-items:center;gap:7px;box-shadow:0 8px 24px rgba(0,0,0,0.4);
 }
 .contacts-fab:hover{border-color:var(--info);}
+.contacts-fab.hosp-fab{left:auto;right:20px;}
 .contacts-modal .modal{max-width:640px;}
 .contact-cat{margin-bottom:16px;}
 .contact-cat h4{font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:var(--dim);margin-bottom:8px;}
