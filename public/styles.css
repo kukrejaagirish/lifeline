@@ -509,8 +509,8 @@ tr.row-cancelled td{opacity:0.45;text-decoration:line-through;}
 
 /* responsive / motion */
 @media (max-width:640px){
-  .contacts-fab{left:12px;bottom:12px;font-size:11.5px;padding:9px 13px;}
-  .contacts-fab.hosp-fab{right:12px;left:auto;}
+  .contacts-fab{left:auto;right:12px;bottom:66px;font-size:11.5px;padding:9px 13px;}
+  .contacts-fab.hosp-fab{right:12px;left:auto;bottom:12px;}
   .pulse-top{flex-direction:column;}
   .hero-right{text-align:left;}
   .hero-tools{justify-content:flex-start;}
