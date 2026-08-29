@@ -142,3 +142,8 @@ This is demo/training software with mock Mumbai-area data — not for real
 dispatch. Hospital bed counts are simulated. SMS/WhatsApp is simulated unless
 Twilio is configured (the notification log always shows the true delivery
 status). Verify emergency numbers independently.
+
+
+## Security / authentication
+
+Secure authentication is enabled by default. See `.env.example` and `SECURITY.md`.
