@@ -915,8 +915,6 @@ class Store:
         unit = (unit or "").strip()
         if unit and not UNIT_RE.match(unit):
             raise ValueError("Operator ID may contain only letters, digits and dashes.")
-        if role == "responder" and not unit:
-            raise ValueError("Responder unit ID is required.")
         token = secrets.token_urlsafe(32)
         self.tokens[token] = {"role": role, "unit": unit, "exp": time.time() + TOKEN_TTL_S}
         return token
@@ -2018,7 +2016,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Permissions-Policy", "geolocation=(self), microphone=(self)")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
         if getattr(self.server, "is_tls", False):
             self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         self.send_header("Cache-Control",
