@@ -303,7 +303,7 @@ def heuristic_triage(notes):
     m = TRIAGE_AGE_RE.search(t)
     age = int(m.group(1)) if m else None
     return {"priority": priority, "dept": dept, "tags": tags[:3], "age": age,
-            "reasoning": "Offline keyword heuristic (no AI key configured).",
+            "reasoning": "",
             "mode": "heuristic", "human_review_required": True}
 
 
