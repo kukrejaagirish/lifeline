@@ -113,9 +113,9 @@ TWILIO_FROM = os.environ.get("LIFELINE_TWILIO_FROM", "")
 NOTIFY_MODE = "twilio" if (TWILIO_SID and TWILIO_AUTH and TWILIO_FROM) \
     else "simulated"
 
-ANTHROPIC_KEY = os.environ.get("LIFELINE_ANTHROPIC_KEY", "")
-ANTHROPIC_MODEL = os.environ.get("LIFELINE_ANTHROPIC_MODEL", "claude-sonnet-5")
-TRIAGE_MODE = "ai" if ANTHROPIC_KEY else "heuristic"
+GROQ_KEY = os.environ.get("LIFELINE_GROQ_KEY", "")
+GROQ_MODEL = os.environ.get("LIFELINE_GROQ_MODEL", "llama-3.3-70b-versatile")
+TRIAGE_MODE = "ai" if GROQ_KEY else "heuristic"
 
 
 def now():
@@ -245,7 +245,7 @@ SPECIALTY_KEYWORDS = {
 
 # ---------------------------------------------------------------------------
 # AI Triage — free-text clinical notes -> suggested priority/dept/tags.
-# Uses the Anthropic API when LIFELINE_ANTHROPIC_KEY is set; otherwise (or on
+# Uses the Groq API when LIFELINE_GROQ_KEY is set; otherwise (or on
 # any API failure) falls back to a transparent keyword heuristic so the
 # feature always works, including fully offline demo mode.
 # ---------------------------------------------------------------------------
@@ -339,20 +339,20 @@ def ai_triage(notes):
         "triage upward (toward critical)."
     )
     body = json.dumps({
-        "model": ANTHROPIC_MODEL,
+        "model": GROQ_MODEL,
         "max_tokens": 300,
-        "system": system,
-        "messages": [{"role": "user", "content": notes[:1000]}],
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": notes[:1000]},
+        ],
     }).encode()
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages", data=body)
-    req.add_header("x-api-key", ANTHROPIC_KEY)
-    req.add_header("anthropic-version", "2023-06-01")
+        "https://api.groq.com/openai/v1/chat/completions", data=body)
+    req.add_header("Authorization", f"Bearer {GROQ_KEY}")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=8) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
-    text = "".join(b.get("text", "") for b in payload.get("content", [])
-                    if b.get("type") == "text").strip()
+    text = (payload.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
     if text.startswith("```"):
         text = text.strip("`")
         text = text.split("\n", 1)[1] if "\n" in text else text
@@ -430,20 +430,20 @@ def ai_sitrep(ctx):
         "bullet points, no headers."
     )
     body = json.dumps({
-        "model": ANTHROPIC_MODEL,
+        "model": GROQ_MODEL,
         "max_tokens": 250,
-        "system": system,
-        "messages": [{"role": "user", "content": json.dumps(ctx)}],
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(ctx)},
+        ],
     }).encode()
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages", data=body)
-    req.add_header("x-api-key", ANTHROPIC_KEY)
-    req.add_header("anthropic-version", "2023-06-01")
+        "https://api.groq.com/openai/v1/chat/completions", data=body)
+    req.add_header("Authorization", f"Bearer {GROQ_KEY}")
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=8) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
-    text = "".join(b.get("text", "") for b in payload.get("content", [])
-                    if b.get("type") == "text").strip()
+    text = (payload.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
     return {"summary": text[:800], "reasoning": "", "mode": "ai"}
 
 
@@ -2148,7 +2148,7 @@ def main():
           f"   DB: {DB_PATH}", flush=True)
     print(f" SMS/WhatsApp: {'LIVE (Twilio)' if NOTIFY_MODE == 'twilio' else 'simulated'}",
           flush=True)
-    print(f" AI Triage   : {'LIVE (Anthropic)' if TRIAGE_MODE == 'ai' else 'offline heuristic'}",
+    print(f" AI Triage   : {'LIVE (Groq)' if TRIAGE_MODE == 'ai' else 'offline heuristic'}",
           flush=True)
     print(f" SLA         : escalate>{SLA_REGISTER_MIN:g}min · delayed>"
           f"+{DELAY_GRACE_MIN:g}min", flush=True)
