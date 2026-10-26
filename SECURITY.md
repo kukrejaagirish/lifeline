@@ -4,14 +4,21 @@
 
 | Version | Supported |
 | --- | --- |
-| 3.x | Yes |
+| 3.4+ | Yes |
+| 3.0 – 3.3 | No — sign-in did not verify operators |
 | < 3.0 | No |
 
 ## Default security posture
 
-- Authentication uses short-lived server-side sessions tied to the operator ID and role.
-- Public user registration is disabled by default.
-- A default `ADMIN-001` admin identity is provisioned for demo/bootstrap use; production deployments should use an external identity provider.
+- Sign-in requires an operator ID; an ID is bound to one role and cannot switch roles.
+- Command Center and Admin require a PIN (PBKDF2-SHA256, 120k iterations, per-user salt); 5 wrong PINs lock the ID for 5 minutes.
+- One live session per operator ID: a new sign-in revokes the older session immediately (`session_replaced`).
+- Strict mode (`LIFELINE_OPEN_LOGIN=0`) admits only admin-registered IDs. Open demo mode lets new non-privileged IDs self-register — do not expose open mode to the internet.
+- Demo identities (`ADMIN-001`, `CMD-01`, PIN from `LIFELINE_DEMO_PIN`, default 1234) exist for bootstrap; change the PIN, and use an external identity provider for production.
+- Police, traffic control and patient attendants receive role-filtered state with clinical fields removed.
+- Responders can only advance or hand over their own runs.
+- IoT devices authenticate with a per-device key (stored hashed); unknown device and wrong key get the same answer; replayed readings are refused.
+- Session tokens never appear in the server log (the SSE URL is redacted).
 - Session tokens are random, short-lived, and held server-side.
 - State-changing POST requests are rate limited.
 - API and static responses include defensive security headers.

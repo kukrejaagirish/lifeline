@@ -330,15 +330,25 @@ async function api(path, opts, retry) {
   const res = await fetch(path, Object.assign({}, opts, { headers }));
   let data = {};
   try { data = await res.json(); } catch (e) { }
-  if (res.status === 401 && retry && App.mode === 'live') {
-    App.token = null;
-    sessionStorage.removeItem('ll_token');
-    sessionStorage.removeItem('ll_role');
-    sessionStorage.removeItem('ll_unit');
-    if ($('loginScreen')) $('loginScreen').classList.remove('hide');
+  if (res.status === 401 && retry && App.mode === 'live' && path !== '/api/login') {
+    sessionEnded(data.error || 'Your session ended. Please sign in again.');
   }
   if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
   return data;
+}
+
+/* Session ended on the server (signed in elsewhere, signed out, expired,
+   server restarted): stop live sync and return to the sign-in screen with
+   the server's own reason instead of a silent "RECONNECTING…". */
+function sessionEnded(msg) {
+  if (App.es) { App.es.close(); App.es = null; }
+  App.token = null; App.esUp = false;
+  sessionStorage.removeItem('ll_token');
+  sessionStorage.removeItem('ll_role');
+  sessionStorage.removeItem('ll_unit');
+  if ($('appRoot')) $('appRoot').style.display = 'none';
+  if ($('loginScreen')) $('loginScreen').classList.remove('hide');
+  showLoginError(msg);
 }
 
 /* ================= boot ================= */
@@ -392,8 +402,12 @@ async function enterApp(role, unit) {
   const le = $('loginError');
   if (le) le.hidden = true;
   App.role = role; App.unit = (unit || '').trim();
-  if (App.unit && !UNIT_RE.test(App.unit)) {
-    showLoginError('Unit ID: letters, digits and dashes only (e.g. AMB-1024) — or leave it empty.');
+  if (!App.unit) {
+    showLoginError('Enter your Unit / Operator ID (e.g. AMB-1024, CMD-01).');
+    return;
+  }
+  if (!UNIT_RE.test(App.unit)) {
+    showLoginError('Unit ID: letters, digits and dashes only (e.g. AMB-1024).');
     return;
   }
   sessionStorage.setItem('ll_role', role);
@@ -401,11 +415,19 @@ async function enterApp(role, unit) {
 
   if (App.mode === 'live') {
     try {
+      const pinEl = $('loginPinInput');
       const res = await api('/api/login', {
-        method: 'POST', body: JSON.stringify({ role, unit: App.unit }),
+        method: 'POST',
+        body: JSON.stringify({ role, unit: App.unit, pin: pinEl ? pinEl.value : '' }),
       });
+      if (pinEl) pinEl.value = '';
       App.token = res.token;
+      App.unit = res.unit || App.unit;
+      sessionStorage.setItem('ll_unit', App.unit);
       sessionStorage.setItem('ll_token', App.token);
+      if (res.session && res.session.replaced_previous) {
+        toast('Signed in', res.message, 'info');
+      }
       connectSSE();
       await refresh();
     } catch (e) {
@@ -462,6 +484,22 @@ function connectSSE() {
     App.esUp = true; App.esFails = 0;
     applySnapshot(JSON.parse(e.data));
   });
+  es.addEventListener('session', e => {
+    let d = {}; try { d = JSON.parse(e.data); } catch (_) { }
+    sessionEnded(d.error || 'Your session ended. Please sign in again.');
+  });
+  // Lightweight IoT updates (vitals + GPS) between full snapshots.
+  es.addEventListener('telemetry', e => {
+    let d; try { d = JSON.parse(e.data); } catch (_) { return; }
+    if (!App.state) return;
+    if (d.gps) { App.state.unit_positions = App.state.unit_positions || {}; App.state.unit_positions[d.unit] = d.gps; }
+    if (d.case_id && d.vitals) {
+      const c = (App.state.cases || []).find(x => x.id === d.case_id);
+      if (c) c.vitals = d.vitals;
+    }
+    clearTimeout(App._telTimer);
+    App._telTimer = setTimeout(() => { renderAll(); if (App.mapOpen) updateMap(); }, 400);
+  });
   es.onerror = () => {
     App.esUp = false; updateConn();
     if (es.readyState === EventSource.CLOSED) {
@@ -478,6 +516,11 @@ function connectSSE() {
 
 async function reconnectSSE() {
   if (App.mode !== 'live' || !App.role || !App.token) return;
+  try {
+    await api('/api/session');      // a dead session lands on the sign-in screen
+  } catch (e) {
+    if (!App.token) return;         // sessionEnded() already ran
+  }
   connectSSE();
 }
 
@@ -1086,7 +1129,7 @@ function sitrepBlock() {
   <div class="analytics-panel sitrep-panel">
     <button class="btn" type="button" data-act="sitrep-run" id="sitrepBtn">Generate situation report</button>
     <span class="ai-triage-status" id="sitrepStatus"></span>
-    <div class="ai-triage-result" id="sitrepResult" hidden></div>
+    <div class="ai-triage-result" id="sitrepResult"${App.lastSitrep ? '' : ' hidden'}>${App.lastSitrep || ''}</div>
   </div>`;
 }
 
@@ -1364,6 +1407,21 @@ function renderDetailInto(c) {
   buildDetail(c, events, notes, units, c.status < 3);
 }
 
+/* Live vitals from the ambulance's Raspberry Pi kit (IoT). */
+function vitalsHTML(c) {
+  const v = c.vitals;
+  if (!v || typeof v !== 'object' || v.spo2 == null && v.hr == null) return '';
+  const alert = (v.alerts || []).length > 0;
+  const col = alert ? 'var(--critical)' : 'var(--priority)';
+  const parts = [];
+  if (v.spo2 != null) parts.push(`SpO₂ <b>${esc(v.spo2)}%</b>`);
+  if (v.hr != null) parts.push(`HR <b>${esc(v.hr)}</b>`);
+  if (v.temp_c != null) parts.push(`${esc(v.temp_c)} °C`);
+  const when = v.ts ? ` · ${esc(timeStr(v.ts))}` : '';
+  const warn = alert ? `<div style="color:var(--critical);font-weight:700;margin-top:4px;">⚠ ${esc(v.alerts.join(' · '))}</div>` : '';
+  return `<div class="dp-row"><span class="k">Live vitals (IoT)</span><span class="v" style="color:${col}">${parts.join(' · ')}<span style="color:var(--dim);">${when}</span>${warn}</span></div>`;
+}
+
 function buildDetail(c, events, notes, units, editable) {
   const isMine = c.assigned_unit === App.unit || (App.unit && c.amb === App.unit);
   const btns = [];
@@ -1424,6 +1482,7 @@ function buildDetail(c, events, notes, units, editable) {
       <div class="dp-row"><span class="k">Patient age</span><span class="v">${esc(c.age)}</span></div>
       <div class="dp-row"><span class="k">Unit</span><span class="v">${esc(c.assigned_unit || c.amb || 'unassigned')}</span></div>
       <div class="dp-row"><span class="k">Reason</span><span class="v">${esc(c.reason)}</span></div>
+      ${vitalsHTML(c)}
       <div class="dp-row"><span class="k">Traffic</span><span class="v">${esc(c.traffic)}</span></div>
       <div class="dp-row"><span class="k">ETA</span><span class="v">${c.status < 3 ? dispEta(c) + ' min' : '—'}${c.delayed ? ' · <b style="color:var(--critical)">DELAYED</b>' : ''}</span></div>
       ${c.bed_kind ? `<div class="dp-row"><span class="k">Bed</span><span class="v" style="color:var(--priority)">${c.bed_kind.toUpperCase()} RESERVED</span></div>` : ''}
@@ -1832,11 +1891,16 @@ async function runSituationReport() {
   const modeIcon = r.mode === 'ai' ? icon('bot','ic ic-sm')
     : r.mode === 'heuristic-fallback' ? icon('alertTriangle','ic ic-sm ic-urgent')
     : icon('calculator','ic ic-sm');
-  const modeLabel = r.mode === 'ai' ? 'AI briefing (Claude)'
+  const modeLabel = r.mode === 'ai' ? 'AI briefing (Groq LLM)'
     : r.mode === 'heuristic-fallback' ? 'Heuristic fallback (AI unavailable)'
-    : 'Offline heuristic (demo mode)';
-  result.hidden = false;
-  result.innerHTML = `<strong>${modeIcon} ${esc(modeLabel)}</strong><br>${esc(r.summary)}`;
+    : (App.mode === 'live' ? 'Keyword heuristic (no AI key configured)' : 'Offline heuristic (demo mode)');
+  // Keep it: the dashboard re-renders on every live update (v3.3 lost the
+  // report within seconds while transfers were moving).
+  App.lastSitrep = `<strong>${modeIcon} ${esc(modeLabel)}</strong><br>${esc(r.summary)}` +
+    `<div style="color:var(--dim);font-size:11px;margin-top:4px;">Generated ${esc(timeStr(r.generated_at || Date.now()))}</div>`;
+  const live = $('sitrepResult') || result;
+  live.hidden = false;
+  live.innerHTML = App.lastSitrep;
 }
 
 /* ---- AI triage (free-text notes -> priority/dept/tags suggestion) ---- */
@@ -1845,7 +1909,8 @@ const TRIAGE_CRITICAL_KW = ['cardiac arrest', 'not breathing', 'unconscious', 'u
   'anaphyla', 'choking', 'drowning', 'severe trauma', 'multiple injuries', 'no pulse', 'collapsed'];
 const TRIAGE_URGENT_KW = ['chest pain', 'breathless', 'shortness of breath', 'fracture',
   'high fever', 'dehydration', 'labor', 'labour', 'pregnan', 'burns', 'allergic reaction',
-  'fall', 'accident', 'rta', 'road traffic', 'head injury', 'bleeding'];
+  'fall', 'accident', 'rta', 'road traffic', 'head injury', 'bleeding', 'laboured breathing',
+  'labored breathing', 'difficulty breathing'];
 const TRIAGE_DEPT_KW = {
   'Cardiac ICU': ['chest pain', 'heart', 'cardiac', 'stemi', 'palpitation'],
   'Neurosurgery': ['head trauma', 'head injury', 'stroke', 'seizure', 'neuro', 'brain', 'spinal'],
@@ -1856,7 +1921,8 @@ const TRIAGE_DEPT_KW = {
   'Burns Unit': ['burn', 'scald'],
 };
 const TRIAGE_TAG_KW = {
-  'Ventilator': ['not breathing', 'breathless', 'respiratory', 'ventilat', 'shortness of breath'],
+  'Ventilator': ['not breathing', 'breathless', 'respiratory', 'ventilat', 'shortness of breath',
+    'laboured breathing', 'labored breathing'],
   'Defibrillator': ['cardiac arrest', 'heart attack', 'stemi', 'arrhythmia', 'no pulse'],
   'Blood Onboard': ['bleeding', 'hemorrhage', 'haemorrhage', 'blood loss', 'stab', 'gunshot'],
   'Incubator': ['infant', 'newborn', 'premature', 'preterm'],
@@ -1865,16 +1931,33 @@ const TRIAGE_TAG_KW = {
   'Bariatric': ['obese', 'bariatric'],
 };
 
+/* Whole-word keyword match, same rules as server.py kw_hit(): "stable" is not
+   "stab", "heartburn" is not "heart", "laboured breathing" is not "labour". */
+const TRIAGE_STEMS = new Set(['pregnan', 'anaphyla', 'ventilat', 'haemorrhag', 'hemorrhag', 'neuro',
+  'obstetric', 'palpitation', 'respiratory', 'infectious', 'contagious']);
+const TRIAGE_NO_SUFFIX = new Set(['labor', 'labour']);
+const _kwRx = {};
+function kwHit(t, kw) {
+  let rx = _kwRx[kw];
+  if (!rx) {
+    const e = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    rx = _kwRx[kw] = TRIAGE_STEMS.has(kw) ? new RegExp('\\b' + e)
+      : TRIAGE_NO_SUFFIX.has(kw) ? new RegExp('\\b' + e + '(?!ed\\b)s?\\b')
+      : new RegExp('\\b' + e + '(?:s|es|ed|d|ing|bed|bing|ped|ping)?\\b');
+  }
+  return rx.test(t);
+}
+
 function localHeuristicTriage(notes) {
   const t = notes.toLowerCase();
   let priority = 'priority';
-  if (TRIAGE_CRITICAL_KW.some(k => t.includes(k))) priority = 'critical';
-  else if (TRIAGE_URGENT_KW.some(k => t.includes(k))) priority = 'urgent';
+  if (TRIAGE_CRITICAL_KW.some(k => kwHit(t, k))) priority = 'critical';
+  else if (TRIAGE_URGENT_KW.some(k => kwHit(t, k))) priority = 'urgent';
   let dept = 'Emergency';
   for (const [name, kws] of Object.entries(TRIAGE_DEPT_KW)) {
-    if (kws.some(k => t.includes(k))) { dept = name; break; }
+    if (kws.some(k => kwHit(t, k))) { dept = name; break; }
   }
-  const tags = Object.entries(TRIAGE_TAG_KW).filter(([, kws]) => kws.some(k => t.includes(k))).map(([tag]) => tag);
+  const tags = Object.entries(TRIAGE_TAG_KW).filter(([, kws]) => kws.some(k => kwHit(t, k))).map(([tag]) => tag);
   const m = t.match(/(\d{1,3})\s*(?:yo\b|y\/o\b|years?\b|yrs?\b)/i);
   const age = m ? parseInt(m[1], 10) : null;
   return { priority, dept, tags: tags.slice(0, 3), age,
@@ -1910,9 +1993,9 @@ async function runAiTriage() {
   const modeIcon = r.mode === 'ai' ? icon('bot','ic ic-sm')
     : r.mode === 'heuristic-fallback' ? icon('alertTriangle','ic ic-sm ic-urgent')
     : icon('calculator','ic ic-sm');
-  const modeLabel = r.mode === 'ai' ? 'AI suggestion (Claude)'
+  const modeLabel = r.mode === 'ai' ? 'AI suggestion (Groq LLM)'
     : r.mode === 'heuristic-fallback' ? 'Heuristic fallback (AI unavailable)'
-    : 'Offline heuristic (demo mode)';
+    : (App.mode === 'live' ? 'Keyword heuristic (no AI key configured)' : 'Offline heuristic (demo mode)');
   status.textContent = '';
   result.hidden = false;
   result.innerHTML = `<strong>${modeIcon} ${esc(modeLabel)}</strong><br>${esc(r.reasoning || '')}`;
@@ -2360,9 +2443,11 @@ function printHandoverSheet(id) {
     </table>
     <p style="margin-top:26px;font-size:12px;">Sending signature: ______________________ &nbsp;&nbsp;
        Receiving signature: ______________________</p>
-    <button onclick="window.print()">Print</button>
+    <button id="printBtn">Print</button>
     </body></html>`);
   w.document.close();
+  const pb = w.document.getElementById('printBtn');   // no inline handler: CSP has no 'unsafe-inline' for scripts
+  if (pb) pb.addEventListener('click', () => w.print());
 }
 
 async function doDeclareIncident() {

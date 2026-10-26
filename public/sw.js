@@ -1,7 +1,9 @@
-/* Life-Line service worker — v3.3
- * Static shell: cache-first. Leaflet CDN assets: cache-first (runtime).
+/* Life-Line service worker — v3.4
+ * Own files: network-first, cache fallback (a deploy reaches users at once;
+ * v3.3 served app.js cache-first, so fixes never arrived until VERSION changed).
+ * Leaflet CDN assets: cache-first (runtime). Leaflet CDN assets: cache-first (runtime).
  * API + SSE: never cached (network only). */
-const VERSION = 'lifeline-v3.3';
+const VERSION = 'lifeline-v3.4';
 const SHELL = [
   'index.html', 'styles.css', 'app.js', 'icons.js', 'icon.svg', 'manifest.webmanifest'
 ];
@@ -35,6 +37,12 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET') return;
   if (url.pathname.startsWith('/api/') || url.pathname === '/api/events') return;
+  // Only cache what we know; any other cross-origin request goes straight to
+  // the browser. (v3.3 proxied every CDN request through the worker, whose
+  // fetch() is bound by the page CSP's connect-src 'self' — so Leaflet, jsPDF
+  // and the fonts all failed from the second visit on.)
+  const CDN_HOSTS = ['unpkg.com', 'cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+  if (url.origin !== location.origin && !CDN_HOSTS.includes(url.host)) return;
 
   // Navigations: serve shell offline.
   if (e.request.mode === 'navigate') {
@@ -49,14 +57,29 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Everything else static: cache-first with runtime fill (covers CDN).
+  // Own static files: network-first so updates land immediately; offline → cache.
+  if (url.origin === location.origin) {
+    e.respondWith((async () => {
+      const cache = await caches.open(VERSION);
+      try {
+        const res = await fetch(e.request);
+        if (res.ok) cache.put(e.request, res.clone());
+        return res;
+      } catch (_) {
+        return (await cache.match(e.request, { ignoreVary: true })) || Response.error();
+      }
+    })());
+    return;
+  }
+
+  // CDN assets: cache-first with runtime fill.
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);
     const hit = await cache.match(e.request, { ignoreVary: true });
     if (hit) return hit;
     try {
       const res = await fetch(e.request);
-      if (res.ok && (url.origin === location.origin || url.host === 'unpkg.com')) {
+      if (res.ok || res.type === 'opaque') {
         cache.put(e.request, res.clone());
       }
       return res;

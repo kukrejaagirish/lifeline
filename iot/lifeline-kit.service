@@ -1,0 +1,15 @@
+[Unit]
+Description=Life-Line ambulance IoT kit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/lifeline-kit.env
+ExecStart=/home/pi/ll/bin/python /home/pi/lifeline/iot/pi_agent.py
+Restart=always
+RestartSec=3
+User=pi
+StateDirectory=lifeline-kit
+
+[Install]
+WantedBy=multi-user.target

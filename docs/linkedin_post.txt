@@ -1,0 +1,19 @@
+🚑 Every minute matters between an ambulance and an ICU bed.
+
+I built Life-Line, a live coordination board that puts ambulance crews, hospitals, police, traffic control and a command centre on one shared screen during an emergency transfer.
+
+What it does:
+• The crew files a transfer, and Command and the receiving hospital see it instantly on every device
+• ICU bed reservation and smart destination suggestions
+• AI triage turns field notes into priority, department and equipment
+• One-click AI situation report for the commander
+• SLA watchdog flags and escalates delayed transfers
+• NEW: a Raspberry Pi kit in the ambulance streams GPS, SpO₂ and heart rate. If oxygen drops, the hospital sees the alert before the ambulance arrives.
+
+Under the hood: pure Python + vanilla JavaScript, zero dependencies, 66 automated tests, role-based access with PIN-protected command roles, and English / Hindi / Marathi.
+
+Demo below 👇  Code: github.com/kukrejaagirish/lifeline
+
+I'd love feedback from anyone in emergency medicine, healthtech or IoT. What should I build next?
+
+#HealthTech #EmergencyMedicine #IoT #RaspberryPi #Python #JavaScript #OpenSource #DigitalHealth #SmartCities #India

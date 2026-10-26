@@ -14,7 +14,9 @@
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin=""/>
 <link rel="stylesheet" href="styles.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"
+        integrity="sha512-qZvrmS2ekKPF2mSznTQsxqPgnpkI4DNTlrdUmTzrDgektczlKNRRhy5X5AAOnx5S09ydFYWWNSfcEqDTTHgtNA=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
         crossorigin=""></script>
@@ -58,7 +60,11 @@
     </details>
     <div class="login-id-row">
       <label for="loginIdInput">Unit / Operator ID</label>
-      <input id="loginIdInput" placeholder="e.g. AMB-1024" autocomplete="username" maxlength="24">
+      <input id="loginIdInput" placeholder="e.g. AMB-1024" autocomplete="username" maxlength="24" required>
+    </div>
+    <div class="login-id-row">
+      <label for="loginPinInput">PIN <span style="color:var(--dim);font-weight:400;">(Command Center &amp; Admin)</span></label>
+      <input id="loginPinInput" type="password" inputmode="numeric" pattern="[0-9]*" placeholder="4–12 digits" autocomplete="current-password" maxlength="12">
     </div>
 <div class="login-error" id="loginError" hidden></div>
     <div class="login-footnote" id="loginFootnote">Detecting server…</div>

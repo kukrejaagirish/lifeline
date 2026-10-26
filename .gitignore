@@ -2,7 +2,7 @@
 data/
 __pycache__/
 *.pyc
-".dev-notes.md"
+.dev-notes.md
 
 # Leftover AI-patch / one-off artifacts — never commit these
 *-fixed/

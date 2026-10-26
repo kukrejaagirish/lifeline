@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Life-Line v3 — Emergency Transfer Coordination Server.
+Life-Line v3.4 — Emergency Transfer Coordination Server.
 
 Stdlib only, no pip install. REST API + SSE for live sync, SQLite storage,
 role-based auth, and a couple of optional integrations (Twilio for real
@@ -10,13 +10,14 @@ full env var list.
 
 Usage:
     python server.py [--host 0.0.0.0] [--port 8787] [--fresh] [--no-sim]
-                     [--region mumbai] [--certfile F] [--keyfile F]
+                     [--seed-demo] [--region mumbai] [--certfile F] [--keyfile F]
 """
 
 import argparse
 import atexit
 import base64
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -40,7 +41,7 @@ DATA_DIR = os.path.join(ROOT, "data")
 DB_PATH = os.path.join(DATA_DIR, "lifeline.db")
 LEGACY_JSON = os.path.join(DATA_DIR, "state.json")
 
-VERSION = "3.3"
+VERSION = "3.4"
 STATUS_LABELS = ["REGISTERED", "IN TRANSIT", "ARRIVING", "ARRIVED", "CANCELLED"]
 PRIORITIES = ("critical", "urgent", "priority")
 TRAFFIC_LEVELS = ["Clear", "Moderate", "Heavy congestion"]
@@ -98,6 +99,8 @@ PERMS = {
     "state_read": set(ROLES),
     "report_read": {"command", "admin"},
     "user_manage": {"admin"},
+    "device_read": {"command", "admin"},
+    "device_manage": {"admin"},
 }
 UNIT_RE = re.compile(r"^[A-Za-z0-9\-]{1,24}$")
 ICU_DEPT_RE = re.compile(r"icu|cardiac|neuro|trauma|obstetric|surgery", re.I)
@@ -106,6 +109,73 @@ ALLOW_PUBLIC_REGISTRATION = os.environ.get("LIFELINE_ALLOW_PUBLIC_REGISTRATION",
 AUDIT_CAP_MEM = 1000
 MAX_BODY = 64 * 1024
 RATE_LIMIT = int(os.environ.get("LIFELINE_RATE_LIMIT", "120"))  # POSTs /min/IP
+
+
+def _env_flag(name, default):
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+# ---- sign-in policy ----
+# OPEN_LOGIN (demo default): an operator ID nobody has used yet is registered
+# to the role it first signs in with. STRICT (LIFELINE_OPEN_LOGIN=0): only
+# IDs an admin registered may sign in. In both modes an ID can never switch
+# role, and Command Center / Admin always need a PIN.
+OPEN_LOGIN = _env_flag("LIFELINE_OPEN_LOGIN", "1")
+SINGLE_SESSION = _env_flag("LIFELINE_SINGLE_SESSION", "1")
+PRIVILEGED_ROLES = {"command", "admin"}
+RESTRICTED_VIEW_ROLES = {"police", "traffic", "attendant"}   # no clinical data
+DEMO_PIN = os.environ.get("LIFELINE_DEMO_PIN", "1234")
+PIN_RE = re.compile(r"^[0-9]{4,12}$")
+PIN_ITERATIONS = 120_000
+LOGIN_MAX_FAILS = 5
+LOGIN_LOCK_S = 300
+CLOSED_CASES_IN_SNAPSHOT = 100
+
+# ---- IoT (Raspberry Pi ambulance kit) ----
+DEMO_DEVICE_ID = "PI-AMB-1024"
+DEMO_DEVICE_KEY = os.environ.get("LIFELINE_DEMO_DEVICE_KEY", "demo-pi-key-1024")
+IOT_MIN_INTERVAL_S = float(os.environ.get("LIFELINE_IOT_MIN_INTERVAL_S", "0.5"))
+IOT_REPORT_INTERVAL_S = 5
+DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9\-]{3,32}$")
+IOT_BUTTONS = ("none", "panic", "arrived")
+VITAL_RANGES = {            # accepted sensor range (outside = rejected as bad data)
+    "spo2": (50, 100), "hr": (20, 250), "temp_c": (30.0, 45.0),
+}
+VITAL_ALERTS = {            # clinically abnormal (inside range, but alert)
+    "spo2": (90, None), "hr": (45, 130), "temp_c": (35.0, 39.0),
+}
+
+
+class AuthError(Exception):
+    """Sign-in / session failure with an HTTP status and a stable code."""
+
+    def __init__(self, status, message, code):
+        super().__init__(message)
+        self.status, self.message, self.code = status, message, code
+
+
+def text_field(value, name, default=""):
+    """Accept a JSON string (or nothing); anything else is a 400, not a 500."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{name} must be text.")
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be text, not a number.")
+    return value.strip()
+
+
+def hash_pin(pin, salt=None):
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt),
+                                 PIN_ITERATIONS).hex()
+    return salt, digest
+
+
+def verify_pin(pin, salt, digest):
+    if not (pin and salt and digest):
+        return False
+    return hmac.compare_digest(hash_pin(pin, salt)[1], digest)
 
 TWILIO_SID = os.environ.get("LIFELINE_TWILIO_SID", "")
 TWILIO_AUTH = os.environ.get("LIFELINE_TWILIO_AUTH", "")
@@ -259,7 +329,8 @@ TRIAGE_URGENT_KW = [
     "chest pain", "breathless", "shortness of breath", "fracture",
     "high fever", "dehydration", "labor", "labour", "pregnan", "burns",
     "allergic reaction", "fall", "accident", "rta", "road traffic",
-    "head injury", "bleeding",
+    "head injury", "bleeding", "laboured breathing", "labored breathing",
+    "difficulty breathing",
 ]
 TRIAGE_DEPT_KW = {
     "Cardiac ICU": ["chest pain", "heart", "cardiac", "stemi", "palpitation"],
@@ -274,7 +345,7 @@ TRIAGE_DEPT_KW = {
 }
 TRIAGE_TAG_KW = {
     "Ventilator": ["not breathing", "breathless", "respiratory", "ventilat",
-                   "shortness of breath"],
+                   "shortness of breath", "laboured breathing", "labored breathing"],
     "Defibrillator": ["cardiac arrest", "heart attack", "stemi",
                        "arrhythmia", "no pulse"],
     "Blood Onboard": ["bleeding", "hemorrhage", "haemorrhage", "blood loss",
@@ -287,19 +358,42 @@ TRIAGE_TAG_KW = {
 TRIAGE_AGE_RE = re.compile(r"(\d{1,3})\s*(?:yo\b|y/o\b|years?\b|yrs?\b)", re.I)
 
 
+# Stems that may continue into longer words ("pregnan" → pregnant/pregnancy).
+# Every other keyword must match as a word (plus a plural/verb ending), so
+# "stable" no longer reads as "stab", "heartburn" as "heart"/"burn",
+# "certain" as "rta" or "laboured breathing" as "labour".
+TRIAGE_STEMS = {"pregnan", "anaphyla", "ventilat", "haemorrhag", "hemorrhag", "neuro",
+                "obstetric", "palpitation", "respiratory", "infectious", "contagious"}
+TRIAGE_NO_SUFFIX = {"labor", "labour"}
+_KW_CACHE = {}
+
+
+def kw_hit(text, kw):
+    rx = _KW_CACHE.get(kw)
+    if rx is None:
+        if kw in TRIAGE_STEMS:
+            pat = r"\b" + re.escape(kw)
+        elif kw in TRIAGE_NO_SUFFIX:
+            pat = r"\b" + re.escape(kw) + r"(?!ed\b)(?:s)?\b"
+        else:
+            pat = r"\b" + re.escape(kw) + r"(?:s|es|ed|d|ing|bed|bing|ped|ping)?\b"
+        rx = _KW_CACHE[kw] = re.compile(pat)
+    return rx.search(text) is not None
+
+
 def heuristic_triage(notes):
     t = notes.lower()
     priority = "priority"
-    if any(k in t for k in TRIAGE_CRITICAL_KW):
+    if any(kw_hit(t, k) for k in TRIAGE_CRITICAL_KW):
         priority = "critical"
-    elif any(k in t for k in TRIAGE_URGENT_KW):
+    elif any(kw_hit(t, k) for k in TRIAGE_URGENT_KW):
         priority = "urgent"
     dept = "Emergency"
     for name, kws in TRIAGE_DEPT_KW.items():
-        if any(k in t for k in kws):
+        if any(kw_hit(t, k) for k in kws):
             dept = name
             break
-    tags = [tag for tag, kws in TRIAGE_TAG_KW.items() if any(k in t for k in kws)]
+    tags = [tag for tag, kws in TRIAGE_TAG_KW.items() if any(kw_hit(t, k) for k in kws)]
     m = TRIAGE_AGE_RE.search(t)
     age = int(m.group(1)) if m else None
     return {"priority": priority, "dept": dept, "tags": tags[:3], "age": age,
@@ -565,25 +659,77 @@ def hospital_coords(h, areas, center):
 # SSE hub
 # --------------------------------------------------------------------------
 
+def redact_snapshot(snap):
+    """Police, traffic control and patient attendants coordinate the route,
+    not the treatment: strip clinical fields before they see a case."""
+    out = dict(snap)
+    cases = []
+    for c in snap.get("cases", []):
+        cc = dict(c)
+        cc["age"] = "—"
+        cc["reason"] = "Restricted (clinical)"
+        cc["notes"] = []
+        cc.pop("vitals", None)
+        cc.pop("iot_alerts", None)
+        cases.append(cc)
+    out["cases"] = cases
+    out["redacted"] = True
+    return out
+
+
+def view_for(role, snap):
+    return redact_snapshot(snap) if role in RESTRICTED_VIEW_ROLES else snap
+
+
 class Hub:
+    """SSE fan-out. Each client carries its role so clinical data only goes
+    to roles allowed to see it."""
+
     def __init__(self):
-        self._clients = []
+        self._clients = []          # [(queue, role)]
         self._lock = threading.Lock()
 
-    def add(self, q):
+    def add(self, q, role=None, token=None):
         with self._lock:
-            self._clients.append(q)
+            self._clients.append((q, role, token))
+
+    def kick(self, token, code, message):
+        """Tell the live screens of a revoked session right away."""
+        payload = f"event: session\ndata: {json.dumps({'code': code, 'error': message})}\n\n"
+        with self._lock:
+            targets = [c[0] for c in self._clients if c[2] == token]
+        for q in targets:
+            try:
+                q.put_nowait(payload)
+            except Full:
+                pass
 
     def remove(self, q):
         with self._lock:
-            if q in self._clients:
-                self._clients.remove(q)
+            self._clients = [c for c in self._clients if c[0] is not q]
+
+    def count(self):
+        with self._lock:
+            return len(self._clients)
 
     def broadcast(self, event, obj):
-        payload = f"event: {event}\ndata: {json.dumps(obj)}\n\n"
+        """State snapshots are role-filtered; other events go to everyone
+        allowed to read clinical data unless marked public."""
         with self._lock:
             clients = list(self._clients)
-        for q in clients:
+        cache = {}
+        for q, role, _tok in clients:
+            if event == "state":
+                key = role in RESTRICTED_VIEW_ROLES
+                if key not in cache:
+                    cache[key] = (f"event: state\ndata: "
+                                  f"{json.dumps(view_for(role, obj))}\n\n")
+                payload = cache[key]
+            elif event == "telemetry" and role in RESTRICTED_VIEW_ROLES:
+                lite = {k: v for k, v in obj.items() if k not in ("vitals", "alerts")}
+                payload = f"event: telemetry\ndata: {json.dumps(lite)}\n\n"
+            else:
+                payload = f"event: {event}\ndata: {json.dumps(obj)}\n\n"
             try:
                 q.put_nowait(payload)
             except Full:
@@ -591,6 +737,23 @@ class Hub:
 
 
 HUB = Hub()
+NOTIFY_Q = Queue(maxsize=500)
+
+
+def notify_worker():
+    """Deliver queued SMS/WhatsApp outside the store lock (a slow Twilio
+    call used to freeze every request for up to 4 s per message)."""
+    while True:
+        n, channel, target, body = NOTIFY_Q.get()
+        status = Store._twilio_send(channel, target, body)
+        try:
+            with STORE.lock:
+                n["status"] = status
+                STORE.db.execute("UPDATE notifications SET status=? WHERE id=?",
+                                 (status, n["id"]))
+                STORE.db.commit()
+        except Exception as e:
+            print(f"[notify] status update failed: {e}", flush=True)
 
 # --------------------------------------------------------------------------
 # Rate limiter (per-IP token window for POSTs)
@@ -639,7 +802,8 @@ CREATE TABLE IF NOT EXISTS cases(
   assigned_unit TEXT, bed_kind TEXT, original_eta INT, delayed INT DEFAULT 0,
   sla_escalated INT DEFAULT 0, incident_id TEXT, tags TEXT DEFAULT '[]',
   notes TEXT DEFAULT '[]', history TEXT DEFAULT '[]', handover TEXT DEFAULT '{}',
-  o_lat REAL, o_lng REAL, d_lat REAL, d_lng REAL);
+  o_lat REAL, o_lng REAL, d_lat REAL, d_lng REAL,
+  vitals TEXT DEFAULT '{}', iot_alerts TEXT DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS audit(
   seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, case_id TEXT, text TEXT);
 CREATE TABLE IF NOT EXISTS completed(
@@ -653,11 +817,18 @@ CREATE TABLE IF NOT EXISTS incidents(
   closed_ts TEXT);
 CREATE TABLE IF NOT EXISTS users(
   username TEXT PRIMARY KEY, role TEXT, created TEXT);
+CREATE TABLE IF NOT EXISTS devices(
+  device_id TEXT PRIMARY KEY, unit_id TEXT, key_hash TEXT, created TEXT,
+  last_seen TEXT, last_seq INT DEFAULT 0, active INT DEFAULT 1);
+CREATE TABLE IF NOT EXISTS telemetry(
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, device_id TEXT,
+  unit_id TEXT, case_id TEXT, payload TEXT);
 CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
 CREATE INDEX IF NOT EXISTS idx_cases_incident ON cases(incident_id);
 CREATE INDEX IF NOT EXISTS idx_cases_updated ON cases(updated_at);
 CREATE INDEX IF NOT EXISTS idx_audit_case ON audit(case_id);
 CREATE INDEX IF NOT EXISTS idx_completed_route ON completed(route);
+CREATE INDEX IF NOT EXISTS idx_telemetry_device ON telemetry(device_id);
 """
 
 
@@ -678,6 +849,11 @@ class Store:
         self.incidents = []
         self.bloodbanks = {}
         self.tokens = {}
+        self.revoked = {}           # token -> (reason code, message, expiry)
+        self.login_fails = {}       # operator id -> [count, first_fail_ts]
+        self.devices = {}           # device_id -> dict
+        self.unit_pos = {}          # unit id -> live GPS from its IoT kit
+        self.telemetry_rows = 0
         self.dirty = False
         self.t0 = time.time()
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -687,6 +863,8 @@ class Store:
         self.db.executescript(SCHEMA)
         self._migrate_schema()
         self._ensure_default_admin()
+        self._ensure_demo_roster()
+        self._ensure_demo_device()
         self.db.commit()
         if fresh and os.path.exists(LEGACY_JSON):
             try:
@@ -713,6 +891,16 @@ class Store:
             self.db.execute("ALTER TABLE hospitals ADD COLUMN last_updated TEXT")
         if "verified" not in hcols:
             self.db.execute("ALTER TABLE hospitals ADD COLUMN verified INT DEFAULT 0")
+        ucols = {r[1] for r in self.db.execute("PRAGMA table_info(users)")}
+        if "pin_salt" not in ucols:
+            self.db.execute("ALTER TABLE users ADD COLUMN pin_salt TEXT")
+        if "pin_hash" not in ucols:
+            self.db.execute("ALTER TABLE users ADD COLUMN pin_hash TEXT")
+        ccols = {r[1] for r in self.db.execute("PRAGMA table_info(cases)")}
+        if "vitals" not in ccols:
+            self.db.execute("ALTER TABLE cases ADD COLUMN vitals TEXT DEFAULT '{}'")
+        if "iot_alerts" not in ccols:
+            self.db.execute("ALTER TABLE cases ADD COLUMN iot_alerts TEXT DEFAULT '[]'")
 
     def _ensure_default_admin(self):
         if self.db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -723,11 +911,73 @@ class Store:
         )
         print("[auth] default admin registered: ADMIN-001", flush=True)
 
+    DEMO_ROSTER = [(u, "responder") for u in UNIT_SEED] + [
+        ("SEND-01", "sending"), ("DEST-01", "dest"), ("ATT-01", "attendant"),
+        ("POL-01", "police"), ("TRF-01", "traffic"), ("CMD-01", "command"),
+        ("ADMIN-001", "admin")]
+
+    def _ensure_demo_roster(self):
+        """Register one operator ID per role (ambulances AMB-xxxx, CMD-01,
+        ADMIN-001 …) and give privileged IDs that have no PIN yet the
+        configured PIN (LIFELINE_DEMO_PIN, default 1234 — change it)."""
+        for unit, role in self.DEMO_ROSTER:
+            self.db.execute(
+                "INSERT OR IGNORE INTO users(username,role,created) VALUES(?,?,?)",
+                (unit, role, iso(now())))
+        rows = self.db.execute(
+            "SELECT username FROM users WHERE role IN ('command','admin') "
+            "AND (pin_hash IS NULL OR pin_hash='')").fetchall()
+        for r in rows:
+            salt, digest = hash_pin(DEMO_PIN)
+            self.db.execute("UPDATE users SET pin_salt=?, pin_hash=? WHERE username=?",
+                            (salt, digest, r["username"]))
+        if rows:
+            print(f"[auth] PIN set for {len(rows)} privileged operator ID(s) "
+                  f"(LIFELINE_DEMO_PIN{'' if 'LIFELINE_DEMO_PIN' in os.environ else ' default 1234 — change it'})",
+                  flush=True)
+
+    def _ensure_demo_device(self):
+        """One registered Raspberry Pi kit, bound to ambulance AMB-1024."""
+        if not self.db.execute("SELECT 1 FROM devices WHERE device_id=?",
+                               (DEMO_DEVICE_ID,)).fetchone():
+            self.db.execute(
+                "INSERT INTO devices(device_id,unit_id,key_hash,created,last_seq,active)"
+                " VALUES(?,?,?,?,0,1)",
+                (DEMO_DEVICE_ID, "AMB-1024",
+                 hashlib.sha256(DEMO_DEVICE_KEY.encode()).hexdigest(), iso(now())))
+        self.devices = {r["device_id"]: dict(r) for r in
+                        self.db.execute("SELECT * FROM devices")}
+
     def _load_or_seed(self):
         n = self.db.execute("SELECT COUNT(*) c FROM hospitals").fetchone()["c"]
         if n == 0:
             self._seed()
         self._load_all()
+
+    def seed_demo_cases(self):
+        """--seed-demo: put the four sample transfers on the board so a demo
+        or screen recording starts with a live-looking dashboard."""
+        if any(c["status"] < 3 for c in self.cases):
+            return 0
+        actor = {"role": "command", "unit": "CMD-01"}
+        n = 0
+        for sc in SEED_CASES:
+            p = dict(sc)
+            status, mins = p.pop("status"), p.pop("minutes_ago")
+            try:
+                c = self.create_case(actor, p)
+            except ValueError:
+                continue
+            c["created_at"] = c["updated_at"] = now() - timedelta(minutes=mins)
+            c["history"] = [{"ts": c["created_at"], "status": 0}]
+            for s in range(1, status + 1):
+                c["status"] = s
+                c["history"].append({"ts": now() - timedelta(minutes=max(0, mins - 3 * s)), "status": s})
+            self.save_case(c)
+            n += 1
+        self.rev += 1
+        self.set_meta("rev", self.rev)
+        return n
 
     def _seed(self):
         ds = self.ds
@@ -835,6 +1085,14 @@ class Store:
             c["age"] = int(c["age"])
         c["delayed"] = bool(c["delayed"])
         c["sla_escalated"] = bool(c["sla_escalated"])
+        try:
+            c["vitals"] = json.loads(c.get("vitals") or "{}") or None
+        except (TypeError, ValueError):
+            c["vitals"] = None
+        try:
+            c["iot_alerts"] = json.loads(c.get("iot_alerts") or "[]")
+        except (TypeError, ValueError):
+            c["iot_alerts"] = []
         return c
 
     def _seed_blood(self):
@@ -844,7 +1102,11 @@ class Store:
     # ---------- persistence helpers ----------
     def save_case(self, c, commit=True):
         self.db.execute(
-            "INSERT OR REPLACE INTO cases VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO cases(id,priority,origin,dest,dept,amb,eta,age,"
+            "reason,status,traffic,created_at,updated_at,reported_by,assigned_unit,"
+            "bed_kind,original_eta,delayed,sla_escalated,incident_id,tags,notes,"
+            "history,handover,o_lat,o_lng,d_lat,d_lng,vitals,iot_alerts) VALUES("
+            + ",".join("?" * 30) + ")",
             (c["id"], c["priority"], c["origin"], c["dest"], c["dept"], c["amb"],
              c["eta"], str(c["age"]), c["reason"], c["status"], c["traffic"],
              iso(c["created_at"]), iso(c["updated_at"]), c.get("reported_by", ""),
@@ -855,7 +1117,9 @@ class Store:
              json.dumps(c.get("notes", []), default=iso, ensure_ascii=False),
              json.dumps(c.get("history", []), default=iso, ensure_ascii=False),
              json.dumps(c.get("handover", {}), ensure_ascii=False),
-             c.get("o_lat"), c.get("o_lng"), c.get("d_lat"), c.get("d_lng")))
+             c.get("o_lat"), c.get("o_lng"), c.get("d_lat"), c.get("d_lng"),
+             json.dumps(c.get("vitals") or {}, default=str),
+             json.dumps(c.get("iot_alerts") or [], default=str)))
         if commit:
             self.db.commit()
 
@@ -909,50 +1173,164 @@ class Store:
         return f"{base} {actor['unit']}".strip() if actor.get("unit") else base
 
     # ---------- auth ----------
-    def login(self, role, unit):
-        if role not in ROLES:
-            raise ValueError("Unknown role.")
-        unit = (unit or "").strip()
-        if unit and not UNIT_RE.match(unit):
-            raise ValueError("Operator ID may contain only letters, digits and dashes.")
-        token = secrets.token_urlsafe(32)
-        self.tokens[token] = {"role": role, "unit": unit, "exp": time.time() + TOKEN_TTL_S}
-        return token
+    def login(self, role, unit, pin=None):
+        """Sign an operator in. Takes the store lock itself (the PIN hash is
+        checked outside it so a slow PBKDF2 never stalls live sync).
 
-    def register_user(self, role, unit, actor=None):
-        if not actor or actor.get("role") != "admin":
-            raise PermissionError("Only an authenticated admin can create users.")
+        Returns a dict for the HTTP response; raises AuthError/ValueError."""
+        role = text_field(role, "Role")
+        unit = text_field(unit, "Operator ID")
+        pin = text_field(pin, "PIN")
         if role not in ROLES:
             raise ValueError("Unknown role.")
-        unit = (unit or "").strip()
+        if not unit:
+            raise ValueError("Operator ID is required (e.g. AMB-1024).")
+        if not UNIT_RE.match(unit):
+            raise ValueError("Operator ID may contain only letters, digits and dashes.")
+        key = unit.upper()
+        with self.lock:
+            fails = self.login_fails.get(key)
+            if fails and fails[0] >= LOGIN_MAX_FAILS and time.time() - fails[1] < LOGIN_LOCK_S:
+                wait = int(LOGIN_LOCK_S - (time.time() - fails[1]))
+                raise AuthError(429, f"Too many wrong PINs for {unit}. Try again in {wait} s.",
+                                "login_locked")
+            row = self.db.execute(
+                "SELECT username, role, pin_salt, pin_hash FROM users "
+                "WHERE upper(username)=?", (key,)).fetchone()
+            row = dict(row) if row else None
+        first_login = False
+        if row is None:
+            if role in PRIVILEGED_ROLES:
+                raise AuthError(401, f"{ROLES[role]} sign-in needs a registered operator ID "
+                                     "and PIN. Ask an admin to register you.", "not_registered")
+            if not OPEN_LOGIN:
+                raise AuthError(401, f"Unknown operator ID {unit}. Ask an admin to register it.",
+                                "not_registered")
+            with self.lock:
+                cur = self.db.execute(
+                    "INSERT OR IGNORE INTO users(username,role,created) VALUES(?,?,?)",
+                    (unit, role, iso(now())))
+                self.db.commit()
+                first_login = cur.rowcount == 1
+                if first_login:
+                    self.audit_add("SYSTEM", f"New operator ID {unit} registered as "
+                                             f"{ROLES[role]} on first sign-in (open demo mode)")
+                row = dict(self.db.execute(
+                    "SELECT username, role, pin_salt, pin_hash FROM users "
+                    "WHERE upper(username)=?", (key,)).fetchone())
+        if row["role"] != role:
+            raise AuthError(403, f"Operator ID {row['username']} is registered as "
+                                 f"{ROLES.get(row['role'], row['role'])}, not {ROLES[role]}.",
+                            "role_mismatch")
+        needs_pin = role in PRIVILEGED_ROLES or bool(row.get("pin_hash"))
+        if needs_pin:
+            if not pin:
+                raise AuthError(401, f"PIN required for {ROLES[role]}.", "pin_required")
+            if not verify_pin(pin, row.get("pin_salt"), row.get("pin_hash")):
+                with self.lock:
+                    f = self.login_fails.get(key)
+                    if not f or time.time() - f[1] >= LOGIN_LOCK_S:
+                        f = [0, time.time()]
+                    f[0] += 1
+                    self.login_fails[key] = f
+                left = max(0, LOGIN_MAX_FAILS - f[0])
+                raise AuthError(401, f"Wrong PIN. {left} attempt(s) left before a "
+                                     f"{LOGIN_LOCK_S // 60}-minute lock.", "pin_wrong")
+        with self.lock:
+            self.login_fails.pop(key, None)
+            unit = row["username"]          # canonical spelling
+            replaced = 0
+            if SINGLE_SESSION:
+                for tk, t in list(self.tokens.items()):
+                    if t["unit"].upper() == key:
+                        self.tokens.pop(tk, None)
+                        self.revoked[tk] = ("session_replaced",
+                                            f"Signed out: operator ID {unit} signed in on "
+                                            "another device.", time.time() + TOKEN_TTL_S)
+                        HUB.kick(tk, "session_replaced", self.revoked[tk][1])
+                        replaced += 1
+                if replaced:
+                    self.audit_add("SYSTEM", f"{unit} signed in again — {replaced} older "
+                                             "session(s) signed out")
+            token = secrets.token_urlsafe(32)
+            self.tokens[token] = {"role": role, "unit": unit,
+                                  "exp": time.time() + TOKEN_TTL_S,
+                                  "since": iso(now())}
+        if replaced:
+            msg = (f"Signed in as {unit}. Your earlier session on another device "
+                   "was signed out (one active session per operator ID).")
+        elif first_login:
+            msg = f"Welcome {unit} — new operator ID registered as {ROLES[role]}."
+        else:
+            msg = f"Signed in as {unit} ({ROLES[role]})."
+        return {"token": token, "role": role, "role_label": ROLES[role], "unit": unit,
+                "expires_in_h": TOKEN_TTL_S // 3600, "first_login": first_login,
+                "session": {"replaced_previous": replaced,
+                            "single_session": SINGLE_SESSION},
+                "message": msg}
+
+    def register_user(self, role, unit, actor=None, pin=None):
+        if not actor or actor.get("role") != "admin":
+            raise AuthError(403, "Only an authenticated admin can create users.", "forbidden")
+        role = text_field(role, "Role")
+        unit = text_field(unit, "Operator ID")
+        pin = text_field(pin, "PIN")
+        if role not in ROLES:
+            raise ValueError("Unknown role.")
         if not UNIT_RE.match(unit):
             raise ValueError("Invalid operator ID.")
-        if self.db.execute("SELECT 1 FROM users WHERE username=?", (unit,)).fetchone():
+        if role in PRIVILEGED_ROLES and not pin:
+            raise ValueError(f"A PIN (4–12 digits) is required for {ROLES[role]}.")
+        if pin and not PIN_RE.match(pin):
+            raise ValueError("PIN must be 4–12 digits.")
+        if self.db.execute("SELECT 1 FROM users WHERE upper(username)=?",
+                           (unit.upper(),)).fetchone():
             raise ValueError("That operator ID is already registered.")
+        salt, digest = hash_pin(pin) if pin else (None, None)
         self.db.execute(
-            "INSERT INTO users(username,role,created) VALUES(?,?,?)",
-            (unit, role, iso(now()))
-        )
+            "INSERT INTO users(username,role,created,pin_salt,pin_hash) VALUES(?,?,?,?,?)",
+            (unit, role, iso(now()), salt, digest))
         self.db.commit()
+        self.audit_add("SYSTEM", f"Operator ID {unit} registered as {ROLES[role]} "
+                                 f"by {self.actor_label(actor)}")
 
     def logout(self, token):
-        self.tokens.pop(token, None)
+        t = self.tokens.pop(token, None)
+        if t:
+            self.revoked[token] = ("signed_out", "You signed out. Sign in again.",
+                                   time.time() + TOKEN_TTL_S)
+            HUB.kick(token, "signed_out", "You signed out. Sign in again.")
+
+    def session_state(self, token):
+        """(actor, code, message): actor is None when the token is not live."""
+        if not token:
+            return None, "sign_in_required", "Sign in required."
+        t = self.tokens.get(token)
+        if t:
+            if t["exp"] < time.time():
+                self.tokens.pop(token, None)
+                return None, "session_expired", "Session expired. Sign in again."
+            return t, None, None
+        rv = self.revoked.get(token)
+        if rv:
+            return None, rv[0], rv[1]
+        return None, "session_invalid", "Session not recognised (server restarted?). Sign in again."
 
     def auth(self, token, perm):
-        t = self.tokens.get(token)
+        t, _, _ = self.session_state(token)
         if not t:
-            return None
-        if t["exp"] < time.time():
-            self.tokens.pop(token, None)
             return None
         if perm not in PERMS or t["role"] not in PERMS[perm]:
             return None
         return t
 
     def purge_tokens(self):
-        expired = [k for k, v in self.tokens.items() if v["exp"] < time.time()]
+        nowt = time.time()
+        expired = [k for k, v in self.tokens.items() if v["exp"] < nowt]
         for k in expired:
             self.tokens.pop(k, None)
+        for k in [k for k, v in self.revoked.items() if v[2] < nowt]:
+            self.revoked.pop(k, None)
 
     # ---------- beds / units ----------
     def reserve_bed(self, case):
@@ -991,9 +1369,10 @@ class Store:
     # ---------- notifications ----------
     def push_notification(self, channel, target, body, case_id):
         status = "simulated"
-        if channel in ("sms", "whatsapp") and TWILIO_SID and TWILIO_AUTH \
-                and TWILIO_FROM:
-            status = self._twilio_send(channel, target, body)
+        live = channel in ("sms", "whatsapp") and TWILIO_SID and TWILIO_AUTH \
+            and TWILIO_FROM
+        if live:
+            status = "queued"   # sent by notify_worker, never under the store lock
         n = {"id": None, "ts": iso(now()), "channel": channel, "target": target,
              "body": body[:300], "caseId": case_id, "status": status}
         self.notifications.insert(0, n)
@@ -1004,6 +1383,11 @@ class Store:
             (n["ts"], channel, target, body[:300], case_id, status))
         self.db.commit()
         n["id"] = cur.lastrowid
+        if live:
+            try:
+                NOTIFY_Q.put_nowait((n, channel, target, body))
+            except Full:
+                n["status"] = "failed: notification queue full"
 
     @staticmethod
     def _twilio_send(channel, target, body):
@@ -1059,14 +1443,21 @@ class Store:
         priority = p.get("priority")
         if priority not in PRIORITIES:
             raise ValueError("Priority must be critical, urgent or priority.")
-        origin = (p.get("origin") or "").strip()
-        dest = (p.get("dest") or "").strip()
+        origin = text_field(p.get("origin"), "Sending hospital")
+        dest = text_field(p.get("dest"), "Destination hospital")
         if not origin:
             raise ValueError("Sending hospital is required.")
         if not dest:
             raise ValueError("Destination hospital is required.")
         if dest.lower() == origin.lower():
             raise ValueError("Destination must differ from sending hospital.")
+        dest_h = self.find_hospital(dest)
+        if not dest_h:
+            raise ValueError(f"Unknown destination hospital '{dest[:60]}'. "
+                             "Pick one from the hospital list.")
+        dest = dest_h["name"]           # canonical spelling → bed reservation works
+        if isinstance(p.get("eta"), bool):
+            raise ValueError("Estimated transit time must be a number.")
         try:
             eta = int(p.get("eta"))
         except (TypeError, ValueError):
@@ -1075,6 +1466,8 @@ class Store:
             raise ValueError("ETA must be between 1 and 720 minutes.")
         age_raw = p.get("age")
         age = "—"
+        if isinstance(age_raw, bool):
+            raise ValueError("Patient age must be between 0 and 130.")
         if age_raw not in (None, ""):
             try:
                 age = int(age_raw)
@@ -1086,28 +1479,35 @@ class Store:
         if not isinstance(tags, list) or any(t not in TAGS for t in tags):
             raise ValueError("Invalid equipment tag.")
 
-        def clip(val, n, fallback):
-            val = (val or "").strip()
+        def clip(val, n, fallback, name):
+            val = text_field(val, name)
             return val[:n] if val else fallback
 
-        self.seq += 1
-        self.set_meta("seq", self.seq)
-        ts = now()
-        oc = area_coords(origin, self.ds["areas"], self.ds["center"])
-        dc = area_coords(dest, self.ds["areas"], self.ds["center"])
-        incident_id = (p.get("incident_id") or "").strip() or None
+        dept = clip(p.get("dept"), 80, "Emergency", "Department")
+        amb = clip(p.get("amb"), 24, "", "Ambulance")
+        reason = clip(p.get("reason"), 200, "Advanced treatment required", "Reason")
+        # Validate everything BEFORE taking a case number (a rejected request
+        # used to burn one and leave a gap in the LL-YYYY-NNNNNN sequence).
+        incident_id = text_field(p.get("incident_id"), "Incident") or None
         if incident_id:
             inc = next((i for i in self.incidents
                         if i["id"] == incident_id and not i["closed_ts"]), None)
             if not inc:
                 raise ValueError("Open incident not found.")
 
+        self.seq += 1
+        self.set_meta("seq", self.seq)
+        ts = now()
+        origin_h = self.find_hospital(origin)
+        oc = hospital_coords(origin_h, self.ds["areas"], self.ds["center"]) if origin_h \
+            else area_coords(origin, self.ds["areas"], self.ds["center"])
+        dc = hospital_coords(dest_h, self.ds["areas"], self.ds["center"])
+
         case = {
             "id": f"LL-{ts.year}-{self.seq:06d}",
             "priority": priority, "origin": origin[:120], "dest": dest[:120],
-            "dept": clip(p.get("dept"), 80, "Emergency"),
-            "amb": clip(p.get("amb"), 24, ""), "eta": eta, "age": age,
-            "reason": clip(p.get("reason"), 200, "Advanced treatment required"),
+            "dept": dept, "amb": amb, "eta": eta, "age": age,
+            "reason": reason,
             "status": 0,
             "traffic": random.choices(TRAFFIC_LEVELS, TRAFFIC_WEIGHTS)[0],
             "created_at": ts, "updated_at": ts,
@@ -1117,7 +1517,7 @@ class Store:
             "incident_id": incident_id, "tags": tags,
             "notes": [], "history": [{"ts": ts, "status": 0}],
             "handover": {}, "o_lat": oc[0], "o_lng": oc[1],
-            "d_lat": dc[0], "d_lng": dc[1],
+            "d_lat": dc[0], "d_lng": dc[1], "vitals": None, "iot_alerts": [],
         }
         case["bed_kind"] = self.reserve_bed(case)
         self.cases.insert(0, case)
@@ -1260,7 +1660,7 @@ class Store:
         c = self.find_case(cid)
         if not c:
             raise ValueError("Case not found.")
-        text = (text or "").strip()
+        text = text_field(text, "Note")
         if not text:
             raise ValueError("Note text is required.")
         if len(text) > 500:
@@ -1314,8 +1714,10 @@ class Store:
         c = self.find_case(cid)
         if not c:
             raise ValueError("Case not found.")
-        if item not in dict(CHECKLIST):
+        if not isinstance(item, str) or item not in dict(CHECKLIST):
             raise ValueError("Unknown checklist item.")
+        if c["status"] == 4:
+            raise ValueError("Case is cancelled — no handover to record.")
         hv = c.setdefault("handover", {})
         hv[item] = {"done": bool(done), "by": label,
                     "ts": iso(now()) if done else None}
@@ -1324,10 +1726,221 @@ class Store:
         if all(hv.get(k, {}).get("done") for k, _ in CHECKLIST):
             self.audit_add(cid, f"Handover checklist complete (POD) by {label}")
 
+    # ---------- IoT: Raspberry Pi ambulance kit ----------
+    def device_auth(self, device_id, key):
+        """Constant-time key check. Unknown device and wrong key get the
+        same answer so the endpoint cannot be used to list device IDs."""
+        d = self.devices.get(device_id) if isinstance(device_id, str) else None
+        presented = hashlib.sha256((key or "").encode()).hexdigest()
+        expected = d["key_hash"] if d else hashlib.sha256(b"\x00no-device").hexdigest()
+        ok = hmac.compare_digest(presented, expected)
+        return d if (d and ok and d.get("active", 1)) else None
+
+    @staticmethod
+    def validate_telemetry(p):
+        """Return (clean, errors). Readings outside a sensor's physical range
+        are rejected as bad data; abnormal-but-plausible values become alerts."""
+        errors, clean = {}, {}
+
+        def num(v):
+            return isinstance(v, (int, float)) and not isinstance(v, bool) \
+                and math.isfinite(v)
+
+        seq = p.get("seq")
+        if seq is not None and not (isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0):
+            errors["seq"] = "must be a non-negative integer"
+        clean["seq"] = seq
+        gps = p.get("gps")
+        if gps is not None:
+            if not isinstance(gps, dict):
+                errors["gps"] = "must be an object {lat, lng, speed_kmh}"
+            else:
+                g = {}
+                for k, lo, hi in (("lat", -90, 90), ("lng", -180, 180), ("speed_kmh", 0, 250)):
+                    v = gps.get(k)
+                    if v is None and k == "speed_kmh":
+                        continue
+                    if not num(v):
+                        errors[f"gps.{k}"] = "must be a number"
+                    elif not lo <= v <= hi:
+                        errors[f"gps.{k}"] = f"must be between {lo} and {hi}"
+                    else:
+                        g[k] = round(float(v), 6)
+                clean["gps"] = g
+        vit = p.get("vitals")
+        if vit is not None:
+            if not isinstance(vit, dict):
+                errors["vitals"] = "must be an object {spo2, hr, temp_c}"
+            else:
+                vv = {}
+                for k, (lo, hi) in VITAL_RANGES.items():
+                    v = vit.get(k)
+                    if v is None:
+                        continue
+                    if not num(v):
+                        errors[f"vitals.{k}"] = "must be a number"
+                    elif not lo <= v <= hi:
+                        errors[f"vitals.{k}"] = f"sensor value out of range ({lo}–{hi})"
+                    else:
+                        vv[k] = round(float(v), 1) if k == "temp_c" else int(round(v))
+                clean["vitals"] = vv
+        btn = p.get("button", "none")
+        if btn not in IOT_BUTTONS:
+            errors["button"] = f"must be one of {', '.join(IOT_BUTTONS)}"
+        clean["button"] = btn or "none"
+        tag = p.get("patient_tag")
+        if tag is not None:
+            if not (isinstance(tag, str) and re.match(r"^[A-Fa-f0-9]{4,32}$", tag)):
+                errors["patient_tag"] = "must be a hex RFID UID (4–32 chars)"
+            else:
+                clean["patient_tag"] = tag.upper()
+        if not any(k in p for k in ("gps", "vitals", "button", "patient_tag")):
+            errors["payload"] = "send at least one of gps, vitals, button, patient_tag"
+        return clean, errors
+
+    @staticmethod
+    def vital_alerts(v):
+        out = []
+        for k, (low, high) in VITAL_ALERTS.items():
+            x = (v or {}).get(k)
+            if x is None:
+                continue
+            name = {"spo2": "SpO2", "hr": "Heart rate", "temp_c": "Temperature"}[k]
+            unit = {"spo2": "%", "hr": " bpm", "temp_c": " °C"}[k]
+            if low is not None and x < low:
+                out.append(f"{name} low: {x}{unit}")
+            elif high is not None and x > high:
+                out.append(f"{name} high: {x}{unit}")
+        return out
+
+    def ingest_telemetry(self, d, clean):
+        """Apply one validated reading from device d. Returns (http, body,
+        broadcast_state: bool, lite_event)."""
+        last = d.get("last_seq") or 0
+        seq = clean.get("seq")
+        if seq is not None and seq <= last:
+            return 409, {"ok": False, "code": "stale_seq",
+                         "error": f"Stale or replayed reading (seq {seq} ≤ last {last})."}, False, None
+        now_t = time.time()
+        if now_t - d.get("_last_t", 0) < IOT_MIN_INTERVAL_S:
+            return 429, {"ok": False, "code": "too_frequent",
+                         "error": f"Send at most one reading every {IOT_MIN_INTERVAL_S:g} s.",
+                         "next_interval_s": IOT_REPORT_INTERVAL_S}, False, None
+        d["_last_t"] = now_t
+        unit_id = d["unit_id"]
+        u = self._find_unit(unit_id)
+        case = self.find_case(u["case"]) if u and u.get("case") else None
+        if case and case["status"] >= 3:
+            case = None
+        ts = iso(now())
+        alerts, actions, changed = [], [], False
+        if clean.get("gps"):
+            self.unit_pos[unit_id] = dict(clean["gps"], ts=ts, device_id=d["device_id"])
+        if clean.get("vitals"):
+            alerts = self.vital_alerts(clean["vitals"])
+            if case:
+                prev = set((case.get("vitals") or {}).get("alerts") or [])
+                case["vitals"] = dict(clean["vitals"], ts=ts, alerts=alerts,
+                                      device_id=d["device_id"])
+                new = [a for a in alerts if a.split(":")[0] not in {p.split(":")[0] for p in prev}]
+                if new:
+                    entry = {"ts": ts, "text": "; ".join(new)}
+                    case["iot_alerts"] = ([entry] + (case.get("iot_alerts") or []))[:10]
+                    self.audit_add(case["id"], f"VITALS ALERT from {d['device_id']}: "
+                                               f"{'; '.join(new)}")
+                    self.push_notification("radio", "CMD", f"VITALS ALERT {case['id']}: "
+                                           f"{'; '.join(new)}", case["id"])
+                    self.push_notification("sms", "+910000000000", f"{case['id']} inbound — "
+                                           f"{'; '.join(new)}", case["id"])
+                    changed = True
+                self.save_case(case, commit=False)
+        btn = clean.get("button", "none")
+        if btn == "panic":
+            if case:
+                if case["priority"] != "critical":
+                    case["priority"] = "critical"
+                    actions.append("priority raised to CRITICAL")
+                case["updated_at"] = now()
+                self.save_case(case, commit=False)
+                self.audit_add(case["id"], f"PANIC button pressed on {d['device_id']} ({unit_id})")
+                self.notify_event("ESCALATED", case)
+                actions.append("command centre alerted")
+            else:
+                self.audit_add("SYSTEM", f"PANIC button pressed on {d['device_id']} "
+                                         f"({unit_id}, no active case)")
+                self.push_notification("radio", "CMD", f"PANIC {unit_id} (no active case)", None)
+                actions.append("command centre alerted (no active case)")
+            changed = True
+        elif btn == "arrived":
+            if not case:
+                actions.append("arrival ignored: unit has no active case")
+            elif case["status"] == 0:
+                actions.append("arrival ignored: run has not departed (status REGISTERED)")
+            else:
+                cid = case["id"]
+                while case["status"] < 3:
+                    self.advance(cid, f"IoT button {d['device_id']}")
+                actions.append(f"{cid} marked ARRIVED, bed handover started")
+                changed = True
+        if clean.get("patient_tag") and case:
+            case["patient_tag"] = clean["patient_tag"]
+        if seq is not None:
+            d["last_seq"] = seq
+        d["last_seen"] = ts
+        self.db.execute("UPDATE devices SET last_seen=?, last_seq=? WHERE device_id=?",
+                        (ts, d.get("last_seq") or 0, d["device_id"]))
+        self.db.execute("INSERT INTO telemetry(ts,device_id,unit_id,case_id,payload) "
+                        "VALUES(?,?,?,?,?)", (ts, d["device_id"], unit_id,
+                                              case["id"] if case else None,
+                                              json.dumps(clean)))
+        self.telemetry_rows += 1
+        if self.telemetry_rows % 200 == 0:     # keep the history bounded
+            self.db.execute("DELETE FROM telemetry WHERE seq <= "
+                            "(SELECT MAX(seq) FROM telemetry) - 20000")
+        self.db.commit()
+        body = {"ok": True, "accepted": True, "device_id": d["device_id"], "unit": unit_id,
+                "case_id": case["id"] if case else None,
+                "case_status": STATUS_LABELS[case["status"]] if case else None,
+                "alerts": alerts, "actions": actions,
+                "next_interval_s": IOT_REPORT_INTERVAL_S, "server_time": ts}
+        lite = {"unit": unit_id, "device_id": d["device_id"],
+                "case_id": case["id"] if case else None,
+                "gps": self.unit_pos.get(unit_id), "vitals": case.get("vitals") if case else None,
+                "alerts": alerts}
+        return 202, body, changed, lite
+
+    def register_device(self, device_id, unit_id, actor):
+        device_id = text_field(device_id, "Device ID")
+        unit_id = text_field(unit_id, "Unit")
+        if not DEVICE_ID_RE.match(device_id):
+            raise ValueError("Device ID: 3–32 letters, digits or dashes.")
+        if not self._find_unit(unit_id):
+            raise ValueError(f"Unknown unit '{unit_id}'.")
+        if device_id in self.devices:
+            raise ValueError("That device is already registered.")
+        key = secrets.token_urlsafe(24)
+        d = {"device_id": device_id, "unit_id": unit_id,
+             "key_hash": hashlib.sha256(key.encode()).hexdigest(),
+             "created": iso(now()), "last_seen": None, "last_seq": 0, "active": 1}
+        self.db.execute("INSERT INTO devices(device_id,unit_id,key_hash,created,last_seq,active)"
+                        " VALUES(?,?,?,?,0,1)", (device_id, unit_id, d["key_hash"], d["created"]))
+        self.db.commit()
+        self.devices[device_id] = d
+        self.audit_add("SYSTEM", f"IoT device {device_id} registered to {unit_id} "
+                                 f"by {self.actor_label(actor)}")
+        return key
+
+    def list_devices(self):
+        return [{"device_id": d["device_id"], "unit_id": d["unit_id"],
+                 "created": d.get("created"), "last_seen": d.get("last_seen"),
+                 "last_seq": d.get("last_seq"), "active": bool(d.get("active", 1)),
+                 "position": self.unit_pos.get(d["unit_id"])}
+                for d in self.devices.values()]
+
     # ---------- incidents ----------
     def open_incident(self, name, location):
-        name = (name or "").strip()
-        location = (location or "").strip()
+        name = text_field(name, "Incident name")
+        location = text_field(location, "Location")
         if not name:
             raise ValueError("Incident name is required.")
         self.mci_seq += 1
@@ -1496,7 +2109,7 @@ class Store:
                 "rev": self.rev,
                 "seq": self.seq,
                 "server_time": iso(now()),
-                "cases": self.cases,
+                "cases": self.cases if full else self._board_cases(),
                 "hospitals": self.hospitals,
                 "units": self.units,
                 "completed": self.completed if full else [],
@@ -1511,8 +2124,19 @@ class Store:
                 "sla": {"register_min": SLA_REGISTER_MIN,
                         "delay_grace_min": DELAY_GRACE_MIN},
                 "notify_mode": NOTIFY_MODE,
+                "unit_positions": self.unit_pos,
+                "devices": [{"device_id": d["device_id"], "unit_id": d["unit_id"],
+                             "last_seen": d.get("last_seen")}
+                            for d in self.devices.values() if d.get("active", 1)],
             }
             return json.loads(json.dumps(raw, default=ser))
+
+    def _board_cases(self):
+        """Every active case plus the most recent closed ones. The old full
+        list grew forever and was re-sent to every screen on every change."""
+        active = [c for c in self.cases if c["status"] < 3]
+        closed = [c for c in self.cases if c["status"] >= 3][:CLOSED_CASES_IN_SNAPSHOT]
+        return active + closed
 
     # ---------- sim support ----------
     def blood_walk(self):
@@ -1612,6 +2236,8 @@ def sim_loop(enabled):
                             changed = True
                             if c["eta"] <= 0:
                                 STORE.advance(c["id"], "system", system=True)
+                            else:
+                                STORE.save_case(c, commit=False)
                         elif random.random() < 0.06:
                             prev = c["traffic"]
                             c["traffic"] = random.choices(TRAFFIC_LEVELS,
@@ -1665,9 +2291,14 @@ class Handler(BaseHTTPRequestHandler):
     server_version = f"LifeLine/{VERSION}"
     protocol_version = "HTTP/1.1"
 
+    TOKEN_IN_URL = re.compile(r"(token=)[^&\s\"]+")
+
     def log_message(self, fmt, *args):
+        # The SSE URL carries the session token (EventSource cannot send
+        # headers) — never write it to the log.
+        line = self.TOKEN_IN_URL.sub(r"\1***", fmt % args)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] "
-              f"{self.address_string()} {fmt % args}", flush=True)
+              f"{self.address_string()} {line}", flush=True)
 
     # ---- response helpers ----
     def _json(self, code, obj):
@@ -1685,15 +2316,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, code, msg):
-        self._json(code, {"error": msg})
+    def _error(self, code, msg, err_code=None, **extra):
+        body = {"error": msg}
+        if err_code:
+            body["code"] = err_code
+        body.update(extra)
+        self._json(code, body)
 
     def _body(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Invalid Content-Length header.")
+        if length < 0:
+            raise ValueError("Invalid Content-Length header.")
         if length > MAX_BODY:
             raise ValueError("Request body too large.")
         raw = self.rfile.read(length) if length else b"{}"
-        data = json.loads(raw.decode("utf-8") or "{}")
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("Invalid JSON body.")
         if not isinstance(data, dict):
             raise ValueError("JSON object expected.")
         return data
@@ -1706,14 +2349,17 @@ class Handler(BaseHTTPRequestHandler):
         return (qs.get("token") or [""])[0]
 
     def _require(self, perm):
+        """401 = no live session (missing, expired, signed out, replaced by a
+        newer sign-in); 403 = live session whose role lacks the permission."""
         token = self._token()
         with STORE.lock:
-            actor = STORE.auth(token, perm)
+            actor, code, msg = STORE.session_state(token)
         if not actor:
-            has_token = bool(token)
-            self._error(403 if has_token else 401,
-                        "Sign in required." if not has_token
-                        else "Your role cannot perform this action.")
+            self._error(401, msg, code)
+            return None
+        if perm not in PERMS or actor["role"] not in PERMS[perm]:
+            self._error(403, f"{ROLES.get(actor['role'], actor['role'])} cannot perform "
+                             "this action.", "forbidden")
             return None
         return actor
 
@@ -1738,15 +2384,34 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True, "service": "life-line", "version": VERSION,
                     "region": STORE.region, "rev": STORE.rev,
                     "notify_mode": NOTIFY_MODE, "triage_mode": TRIAGE_MODE,
-                    "auth_required": True, "public_registration": False,
+                    "auth_required": True,
+                    "public_registration": False,
+                    "login_mode": "open-demo" if OPEN_LOGIN else "strict",
+                    "single_session": SINGLE_SESSION,
+                    "pin_roles": sorted(PRIVILEGED_ROLES),
+                    "iot": {"ingest": "/api/iot/telemetry",
+                            "devices": len(STORE.devices)},
                     "uptime_s": int(time.time() - STORE.t0),
                     "server_time": iso(now()), "roles": ROLES})
             if path == "/api/events":
                 return self._handle_sse()
             if path == "/api/state":
-                if not self._require("state_read"):
+                actor = self._require("state_read")
+                if not actor:
                     return
-                return self._json(200, STORE.snapshot())
+                return self._json(200, view_for(actor["role"], STORE.snapshot()))
+            if path == "/api/session":
+                actor = self._require("state_read")
+                if not actor:
+                    return
+                return self._json(200, {"role": actor["role"], "unit": actor["unit"],
+                                        "since": actor.get("since"),
+                                        "expires_in_s": int(actor["exp"] - time.time())})
+            if path == "/api/iot/devices":
+                if not self._require("device_read"):
+                    return
+                with STORE.lock:
+                    return self._json(200, {"devices": STORE.list_devices()})
             if path == "/api/hospitals":
                 if not self._require("state_read"):
                     return
@@ -1842,22 +2507,30 @@ class Handler(BaseHTTPRequestHandler):
             path = self.path.split("?")[0]
             if path == "/api/login":
                 data = self._body()
-                with STORE.lock:
-                    token = STORE.login(data.get("role"), data.get("unit"))
-                return self._json(200, {
-                    "token": token, "role": data.get("role"),
-                    "unit": (data.get("unit") or "").strip(),
-                    "expires_in_h": TOKEN_TTL_S // 3600})
+                return self._json(200, STORE.login(data.get("role"), data.get("unit"),
+                                                   data.get("pin")))
             if path == "/api/users/register":
-                actor = None
-                if not ALLOW_PUBLIC_REGISTRATION:
-                    actor = self._require("user_manage")
-                    if not actor:
-                        return
+                actor = self._require("user_manage")
+                if not actor:
+                    return
                 data = self._body()
                 with STORE.lock:
-                    STORE.register_user(data.get("role"), data.get("unit"), actor)
+                    STORE.register_user(data.get("role"), data.get("unit"), actor,
+                                        data.get("pin"))
                 return self._json(201, {"ok": True})
+
+            if path == "/api/iot/telemetry":
+                return self._iot_telemetry()
+            if path == "/api/iot/devices":
+                actor = self._require("device_manage")
+                if not actor:
+                    return
+                data = self._body()
+                with STORE.lock:
+                    key = STORE.register_device(data.get("device_id"), data.get("unit"), actor)
+                return self._json(201, {"ok": True, "device_id": data.get("device_id"),
+                                        "device_key": key,
+                                        "note": "Store this key on the Pi now; it is not shown again."})
             if path == "/api/logout":
                 with STORE.lock:
                     STORE.logout(self._token())
@@ -1922,6 +2595,19 @@ class Handler(BaseHTTPRequestHandler):
             data = self._body() if action in (
                 "assign", "dispatch", "notes", "cancel", "handover") else {}
             label = STORE.actor_label(actor)
+            if actor["role"] == "responder" and action in ("status", "handover"):
+                # A field unit may only move its own run (the UI already hid
+                # the button; the API did not check).
+                with STORE.lock:
+                    c = STORE.find_case(cid)
+                    owner = (c.get("assigned_unit") or c.get("amb")) if c else None
+                if c and (owner or "").upper() != (actor.get("unit") or "").upper():
+                    return self._error(403, f"This run is assigned to {owner or 'no unit'}, "
+                                            f"not {actor.get('unit')}.", "not_your_run")
+            if action in ("assign", "dispatch"):
+                data["unit"] = text_field(data.get("unit"), "Unit")
+            if action == "cancel":
+                data["reason"] = text_field(data.get("reason"), "Reason")
 
             if action == "status":
                 return self._mutate_and_broadcast(
@@ -1930,12 +2616,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._mutate_and_broadcast(lambda: STORE.claim(cid, actor))
             if action == "assign":
                 return self._mutate_and_broadcast(
-                    lambda: STORE.assign(cid, (data.get("unit") or "").strip(),
-                                         label))
+                    lambda: STORE.assign(cid, data["unit"], label))
             if action == "dispatch":
                 return self._mutate_and_broadcast(
-                    lambda: STORE.dispatch(cid, (data.get("unit") or "").strip(),
-                                           label))
+                    lambda: STORE.dispatch(cid, data["unit"], label))
             if action == "traffic":
                 return self._mutate_and_broadcast(
                     lambda: STORE.flag_traffic(cid, label))
@@ -1952,10 +2636,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._mutate_and_broadcast(
                     lambda: STORE.set_handover(cid, data.get("item"),
                                                bool(data.get("done")), label))
+        except AuthError as e:
+            self._error(e.status, e.message, e.code)
+        except PermissionError as e:
+            self._error(403, str(e), "forbidden")
         except ValueError as e:
             self._error(400, str(e))
-        except json.JSONDecodeError:
-            self._error(400, "Invalid JSON body.")
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
         except Exception as e:
@@ -1965,15 +2651,55 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self.close_connection = True
 
+    # ---- IoT ingest ----
+    def _iot_telemetry(self):
+        """POST /api/iot/telemetry from a Raspberry Pi kit.
+
+        Auth: X-Device-Key header (or Authorization: Device <key>).
+        202 accepted · 400 bad data (per-field errors) · 401 unknown device or
+        wrong key · 409 replayed/stale seq · 429 too frequent."""
+        key = (self.headers.get("X-Device-Key") or "").strip()
+        auth = self.headers.get("Authorization") or ""
+        if not key and auth.startswith("Device "):
+            key = auth[7:].strip()
+        data = self._body()
+        if not key:
+            return self._error(401, "Device key missing (send the X-Device-Key header).",
+                               "device_key_missing")
+        device_id = data.get("device_id")
+        with STORE.lock:
+            d = STORE.device_auth(device_id, key)
+        if not d:
+            return self._error(401, "Unknown device or wrong device key.",
+                               "device_unauthorized")
+        clean, errors = Store.validate_telemetry(data)
+        if errors:
+            return self._error(400, "Invalid telemetry — reading rejected.", "bad_telemetry",
+                               fields=errors)
+        with STORE.lock:
+            status, body, changed, lite = STORE.ingest_telemetry(d, clean)
+            snap = None
+            if status == 202 and changed:
+                STORE.rev += 1
+                STORE.dirty = True
+                STORE.set_meta("rev", STORE.rev, commit=False)
+                STORE.db.commit()
+                snap = STORE.snapshot()
+        if snap is not None:
+            HUB.broadcast("state", snap)
+        elif lite is not None:
+            HUB.broadcast("telemetry", lite)
+        return self._json(status, body)
+
     # ---- SSE ----
     def _handle_sse(self):
         token = self._token()
         with STORE.lock:
-            actor = STORE.auth(token, "state_read")
+            actor, code, msg = STORE.session_state(token)
         if not actor:
-            return self._error(401, "Sign in required for live events.")
+            return self._error(401, msg, code)
         q = Queue(maxsize=256)
-        HUB.add(q)
+        HUB.add(q, actor["role"], token)
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1982,14 +2708,25 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b": connected\n\n")
             self.wfile.flush()
-            q.put_nowait(f"event: state\ndata: {json.dumps(STORE.snapshot())}\n\n")
+            q.put_nowait(f"event: state\ndata: "
+                         f"{json.dumps(view_for(actor['role'], STORE.snapshot()))}\n\n")
             while True:
                 try:
                     msg = q.get(timeout=15)
                 except Empty:
                     msg = ": ping\n\n"
+                    with STORE.lock:
+                        alive, code, why = STORE.session_state(token)
+                    if not alive:   # signed out / replaced: tell the client, then close
+                        self.wfile.write(f"event: session\ndata: "
+                                         f"{json.dumps({'code': code, 'error': why})}\n\n"
+                                         .encode("utf-8"))
+                        self.wfile.flush()
+                        break
                 self.wfile.write(msg.encode("utf-8"))
                 self.wfile.flush()
+                if msg.startswith("event: session"):
+                    break
         except (BrokenPipeError, ConnectionResetError,
                 ConnectionAbortedError, OSError):
             pass
@@ -2016,7 +2753,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Permissions-Policy", "geolocation=(self), microphone=(self)")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' https://unpkg.com https://cdnjs.cloudflare.com; connect-src 'self' https://unpkg.com https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
         if getattr(self.server, "is_tls", False):
             self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         self.send_header("Cache-Control",
@@ -2045,6 +2782,8 @@ def main():
                     help="delete the SQLite database and reseed")
     ap.add_argument("--no-sim", action="store_true",
                     help="disable the live simulation engine")
+    ap.add_argument("--seed-demo", action="store_true",
+                    help="put four sample transfers on the board (demos/recordings)")
     ap.add_argument("--region", default="mumbai",
                     help=f"dataset region {sorted(DATASETS)}")
     ap.add_argument("--certfile", default="", help="TLS cert (enables HTTPS)")
@@ -2091,6 +2830,10 @@ def main():
         print("[security] WARNING: network bind without TLS; use --certfile/--keyfile.", flush=True)
     STORE = Store(DB_PATH, args.region)
     STORE.t0 = time.time()
+    if args.seed_demo:
+        with STORE.lock:
+            n = STORE.seed_demo_cases()
+        print(f"[store] --seed-demo: {n} sample transfer(s) on the board", flush=True)
     print(f"[store] SQLite ready · region={STORE.region} · "
           f"{len(STORE.cases)} cases · rev {STORE.rev}", flush=True)
 
@@ -2110,6 +2853,7 @@ def main():
     threading.Thread(target=sim_loop, args=(not args.no_sim,),
                      daemon=True).start()
     threading.Thread(target=autosave_loop, args=(15,), daemon=True).start()
+    threading.Thread(target=notify_worker, daemon=True).start()
 
     try:
         server = LifeLineServer((args.host, args.port), Handler)
@@ -2121,11 +2865,12 @@ def main():
                   "be running.", flush=True)
             print("[server] Or start on another port:  python server.py "
                   "--port 8788", flush=True)
-        print("[server] Press Ctrl+C or close this window.", flush=True)
-        try:
-            input()
-        except EOFError:
-            pass
+        if sys.stdin and sys.stdin.isatty():   # keep the Windows console open;
+            print("[server] Press Enter or close this window.", flush=True)
+            try:                                # never block a headless Pi/systemd boot
+                input()
+            except EOFError:
+                pass
         sys.exit(1)
     server.daemon_threads = True
 
@@ -2149,6 +2894,11 @@ def main():
     print(f" SMS/WhatsApp: {'LIVE (Twilio)' if NOTIFY_MODE == 'twilio' else 'simulated'}",
           flush=True)
     print(f" AI Triage   : {'LIVE (Groq)' if TRIAGE_MODE == 'ai' else 'offline heuristic'}",
+          flush=True)
+    print(f" Sign-in     : {'open demo (new IDs self-register)' if OPEN_LOGIN else 'strict (registered IDs only)'}"
+          f" · Command/Admin need PIN · {'one session per ID' if SINGLE_SESSION else 'multi-session'}",
+          flush=True)
+    print(f" IoT ingest  : {url}/api/iot/telemetry · {len(STORE.devices)} device(s) registered",
           flush=True)
     print(f" SLA         : escalate>{SLA_REGISTER_MIN:g}min · delayed>"
           f"+{DELAY_GRACE_MIN:g}min", flush=True)
